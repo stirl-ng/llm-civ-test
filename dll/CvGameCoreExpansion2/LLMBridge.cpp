@@ -68,7 +68,9 @@ bool send_json(const char* json_utf8) {
     std::string s(json_utf8);
     // Minimal guard for JSON format. Full schema validation pending.
     if (s.empty() || s.size() > (1u << 20)) return false;
-    if (!((s.front() == '{' && s.back() == '}') || (s.front() == '[' && s.back() == ']'))) return false;
+    const char first = s[0];
+    const char last = s[s.size() - 1];
+    if (!((first == '{' && last == '}') || (first == '[' && last == ']'))) return false;
     return g_client->send(s);
 }
 
