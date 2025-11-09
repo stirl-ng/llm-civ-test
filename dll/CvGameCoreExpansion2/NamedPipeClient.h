@@ -6,7 +6,7 @@
 
 class NamedPipeClient {
 public:
-    using ReceiveCallback = void(*)(const std::string&);
+    typedef void (*ReceiveCallback)(const std::string&);
 
     NamedPipeClient();
     ~NamedPipeClient();
@@ -17,7 +17,7 @@ public:
     // Queues data to send on background thread.
     bool send(const std::string& json);
 
-    bool is_connected() const { return connected_.load(); }
+    bool is_connected() const { return connected_flag_ != 0; }
 
 private:
     static unsigned __stdcall reader_entry(void* param);

@@ -60,7 +60,7 @@ void init() {
     CritSecGuard guard(&log_cs);
     if (!log_file.is_open()) {
         std::wstring path = ensure_log_path();
-        log_file.open(path, std::ios::out | std::ios::app);
+        log_file.open(path.c_str(), std::ios::out | std::ios::app);
     }
 }
 
