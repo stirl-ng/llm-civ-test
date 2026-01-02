@@ -1,0 +1,33 @@
+# MCP Server Configuration for Civ V Orchestrator
+
+# Server settings
+server:
+  name: "civ5-orchestrator"
+  version: "1.0.0"
+
+# Orchestrator integration
+orchestrator:
+  # Named pipe to connect to Civ V DLL
+  pipe: "\\\\.\\pipe\\civv_llm"
+
+  # Whether to validate incoming state and outgoing actions
+  validate: true
+
+  # Whether to auto-advance turns when no actions are queued
+  auto_advance: false
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+# Tool configuration
+tools:
+  # Enable/disable specific tool categories
+  enable_state_queries: true
+  enable_commands: true
+  enable_formatting: true
+
+  # Safety settings
+  require_confirmation: false  # If true, actions won't auto-execute
+  max_actions_per_turn: 100
