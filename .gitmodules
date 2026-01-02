@@ -1,0 +1,3 @@
+[submodule "Community-Patch-DLL"]
+	path = Community-Patch-DLL
+	url = https://github.com/stirl-ng/Community-Patch-DLL
