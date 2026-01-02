@@ -22,7 +22,7 @@ import win32pipe
 import time
 
 
-DEFAULT_PIPE = r"\\.\pipe\civv_llm"
+DEFAULT_PIPE = r"\\.\pipe\CivVPGameState"
 BUFFER_SIZE = 64 * 1024  # 64KB to handle larger game state payloads
 
 
