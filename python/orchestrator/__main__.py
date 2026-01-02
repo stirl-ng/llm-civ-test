@@ -15,6 +15,9 @@ from jsonschema import Draft202012Validator
 from agent_runtime import Agent, get_model, build_tools
 from agent_runtime.strategies.vanilla import VanillaStrategy
 
+from .formatting import format_message
+from .pipe_server import NamedPipeServer
+
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -102,13 +105,59 @@ def build_agent(cfg: Dict[str, Any]) -> Agent:
     return Agent(model=model, tools=tools, strategy=strategy)
 
 
+DEFAULT_DEBUG_PIPE = r"\\.\pipe\CivVPGameState"
+
+
+def run_debug_server(pipe_path: str, raw_mode: bool = False) -> None:
+    """Run a debug pipe server that displays incoming messages.
+
+    This creates a named pipe server and prints all messages received from
+    the Civ V DLL. Useful for debugging and inspecting game state.
+
+    Args:
+        pipe_path: The named pipe path to create
+        raw_mode: If True, print raw JSON; if False, format nicely
+    """
+    print("=" * 60)
+    print("Civ V LLM Bridge - Debug Pipe Server")
+    print("=" * 60)
+    print(f"Pipe: {pipe_path}")
+    print(f"Mode: {'raw JSON' if raw_mode else 'formatted'}")
+    print("=" * 60)
+    print()
+
+    def on_message(data: bytes) -> Optional[bytes]:
+        try:
+            decoded = data.decode("utf-8").rstrip("\r\n")
+        except UnicodeDecodeError:
+            decoded = data.hex()
+        output = format_message(decoded, raw_mode=raw_mode)
+        print(output, flush=True)
+        return None
+
+    server = NamedPipeServer(pipe_path, on_message)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\nCtrl+C pressed. Exiting.", flush=True)
+        server.stop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Civ V Orchestrator")
     parser.add_argument("--agent-config", help="YAML config describing backend/tools/strategy")
-    parser.add_argument("--pipe", help="Override named pipe path (\\\\.\\pipe\\civv_llm)")
+    parser.add_argument("--pipe", help="Override named pipe path")
     parser.add_argument("--stdio", action="store_true", help="Use stdin/stdout instead of pipe (for testing)")
     parser.add_argument("--once", action="store_true", help="Process only one message then exit")
+    parser.add_argument("--debug", action="store_true", help="Run as debug server: display messages without agent processing")
+    parser.add_argument("--raw", action="store_true", help="In debug mode, print raw JSON instead of formatted output")
     args = parser.parse_args()
+
+    # Debug mode: just display messages, don't run agent
+    if args.debug:
+        pipe = args.pipe or DEFAULT_DEBUG_PIPE
+        run_debug_server(pipe, raw_mode=args.raw)
+        return
 
     repo_root = Path(__file__).resolve().parents[2]
 

@@ -84,9 +84,7 @@ class NamedPipeServer:
 
     def __init__(self, pipe_name: str, on_message: OnMessage):
         if not pipe_name.startswith("\\\\.\\pipe\\"):
-            raise ValueError("pipe_name must start with \\.\\pipe\\")
-        if not pipe_name.endswith("\\"):
-            raise ValueError("pipe_name must end with \\")
+            raise ValueError("pipe_name must start with \\\\.\\pipe\\")
         self.pipe_name = pipe_name
         self.on_message = on_message
         self._running = False
