@@ -1482,3 +1482,80 @@ These should be sent periodically or on demand:
 ---
 
 This document should be updated as the implementation progresses and new requirements are discovered.
+
+---
+
+## Design notes (added 2026-01-02)
+
+### Keep the DLL minimal (recommended)
+The DLL should focus on:
+- emitting **stable primitives** at safe turn-boundary hooks (snapshots)
+- accepting **command bundles**
+- performing **final validation** (never crash / never hang)
+Everything else (enumerations, heuristics, scoring, search) belongs in the orchestrator.
+
+### What’s missing / should be added
+
+#### Critical: required-decision prompts
+Add a top-level list of **action-required prompts** for the active player (so the agent doesn’t need to infer from state):
+- needs_tech_choice
+- needs_policy_choice
+- needs_production_choice (by city_id)
+- needs_religion_choice / enhance / reform (if applicable)
+- needs_trade_route_assignment (if applicable)
+- any forced popup/choice that blocks end-turn
+
+> Recommendation: expose this as a small field in the snapshot **and** as a tool in the orchestrator, since it changes frequently.
+
+#### Critical: legal-action interface (not necessarily full enumeration)
+Agents *can* be judged on proposing legal moves, but **you still want a legality API** to keep the environment robust and to avoid wasting turns:
+- `validate_action(action) -> {legal: bool, reason: str, alternatives?: ...}`
+- optionally `enumerate_legal_actions(unit_id or city_id, scope=...)`
+
+Why: legality in Civ is full of edge cases (movement rules, ZOC, embark/disembark, promotions, domain restrictions, embark techs, one-per-turn attacks, etc.). Final legality should be checked in the DLL regardless.
+
+> Recommendation: do **on-demand** legal action enumeration for a specific entity (unit/city), not a full “all legal actions” dump every turn.
+
+#### High-value: city micro control knobs
+Snapshot already includes worked tiles and specialists; add the **controls** that change them:
+- tile locks (which plot indices are locked)
+- focus flags (production / food / gold / avoid growth, etc.)
+- specialist assignments vs available slots (not just totals)
+
+#### High-value: worker/build actions
+For units that can build improvements, add:
+- current build action (if any) + turns remaining
+- per-plot available build actions (on-demand tool preferred), incl. build time
+
+#### High-value: player knowledge state
+To avoid treating “unknown” as “absent”, add per-other-player relationship/knowledge flags:
+- has_met, embassy, open_borders, at_war, defensive_pact, friendship, denounced
+- last_seen timestamps for enemy units/cities (optional, can live in orchestrator memory)
+
+### What should be computed in the orchestrator (not in the DLL)
+
+#### Derived “turns remaining” estimates
+Prefer exporting `{stored, cost, rate}` and computing:
+- tech turns remaining
+- growth turns remaining
+- production turns remaining
+- policy turns remaining
+
+This avoids DLL-side rounding drift and special-case logic duplication.
+
+#### Combat evaluation / “best attack” scoring
+Export primitives (positions, strengths, promotions, terrain); compute:
+- expected damage / kill chances
+- tactical value heuristics
+in the orchestrator via a dedicated evaluator tool.
+
+#### Pathfinding suggestions
+Do not dump “all reachable tiles” globally. Instead:
+- orchestrator requests `enumerate_moves(unit_id, max_cost or radius)` on-demand
+or computes approximations from map layers when acceptable.
+
+### Notes on judging agents for legality
+You can still score agents on legality without forcing the orchestrator to enumerate everything:
+- Treat **illegal proposals** as a penalty signal in evaluation/logs.
+- But keep a `validate_action` tool and DLL-side validation so the sim remains stable and debugging is easy.
+- A good compromise: “agent proposes actions; orchestrator validates; agent may revise within a budget; final bundle is applied.”
