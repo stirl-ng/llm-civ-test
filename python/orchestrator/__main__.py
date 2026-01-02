@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -151,6 +152,7 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Process only one message then exit")
     parser.add_argument("--debug", action="store_true", help="Run as debug server: display messages without agent processing")
     parser.add_argument("--raw", action="store_true", help="In debug mode, print raw JSON instead of formatted output")
+    parser.add_argument("--mcp", action="store_true", help="Run as MCP server: expose game control via Model Context Protocol")
     args = parser.parse_args()
 
     # Debug mode: just display messages, don't run agent
@@ -158,6 +160,23 @@ def main() -> None:
         pipe = args.pipe or DEFAULT_DEBUG_PIPE
         run_debug_server(pipe, raw_mode=args.raw)
         return
+
+    # MCP mode: run MCP server for LLM tool access
+    if args.mcp:
+        from .mcp_server import run_mcp_server
+        asyncio.run(run_mcp_server())
+        return
+
+    # Check if we should run with MCP HTTP server integrated
+    run_with_mcp = os.environ.get("MCP_HTTP_ENABLED", "").lower() == "true"
+    mcp_server = None
+    if run_with_mcp:
+        from .mcp_http_server import MCPHTTPServer
+        mcp_host = os.environ.get("MCP_HTTP_HOST", "localhost")
+        mcp_port = int(os.environ.get("MCP_HTTP_PORT", "8765"))
+        mcp_server = MCPHTTPServer(mcp_host, mcp_port)
+        mcp_server.start()
+        print(f"[orchestrator] MCP HTTP Server started on http://{mcp_host}:{mcp_port}", file=sys.stderr)
 
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -214,7 +233,24 @@ def main() -> None:
                 break
             continue
 
+        # Update MCP server with state if running
+        if mcp_server:
+            mcp_server.update_state(state)
+
+        # Get actions from agent
         actions = agent.step(state)
+
+        # If MCP server is running, also include its queued actions
+        if mcp_server:
+            mcp_actions = mcp_server.get_pending_actions()
+            if mcp_actions:
+                # Merge MCP actions with agent actions
+                existing_actions = actions.get("actions", [])
+                existing_actions.extend(mcp_actions)
+                actions["actions"] = existing_actions
+                notes = actions.get("notes", "")
+                actions["notes"] = f"{notes} | MCP: {len(mcp_actions)} actions"
+
         try:
             action_v.validate(actions)
         except Exception as e:
