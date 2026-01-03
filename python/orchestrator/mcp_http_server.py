@@ -2,16 +2,19 @@
 HTTP-based MCP Server for Civilization V
 
 Provides an HTTP interface for LLMs to control the game via tool calls.
-Runs alongside the orchestrator in a background thread.
+Runs in a background thread alongside the main orchestrator loop.
 """
 
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
+
+if TYPE_CHECKING:
+    from .turn_manager import TurnManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,21 +22,46 @@ logger = logging.getLogger(__name__)
 class MCPHTTPHandler(BaseHTTPRequestHandler):
     """HTTP request handler for MCP server."""
 
-    mcp_server: CivMCPServer = None  # Set by server instance
+    mcp_server: CivMCPServer = None  # Set by MCPHTTPServer
 
     def log_message(self, format: str, *args):
         """Override to use our logger."""
-        logger.info(format % args)
+        logger.debug(format % args)
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight."""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_GET(self):
         """Handle GET requests."""
         if self.path == "/health":
             self._send_json({"status": "ok", "server": "civ5-mcp"})
+
         elif self.path == "/state":
             state = self.mcp_server.current_state or {}
-            self._send_json(state)
+            turn_active = self.mcp_server.turn_manager.turn_active
+            turn_num = self.mcp_server.turn_manager.turn_number
+            self._send_json({
+                "turn_active": turn_active,
+                "turn": turn_num,
+                "state": state
+            })
+
         elif self.path == "/tools":
             self._send_json({"tools": AVAILABLE_TOOLS})
+
+        elif self.path == "/turn":
+            tm = self.mcp_server.turn_manager
+            self._send_json({
+                "turn_active": tm.turn_active,
+                "turn": tm.turn_number,
+                "player_id": tm._player_id
+            })
+
         else:
             self._send_error(404, "Not found")
 
@@ -50,10 +78,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         if self.path == "/tool":
             self._handle_tool_call(request)
-        elif self.path == "/state":
-            # Update state (called by orchestrator)
-            self.mcp_server.update_state(request)
-            self._send_json({"status": "updated"})
         else:
             self._send_error(404, "Not found")
 
@@ -87,19 +111,20 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
 
 class MCPHTTPServer:
-    """HTTP server wrapper for MCP server.
+    """HTTP server wrapper for MCP server."""
 
-    Turn-based flow:
-    1. Orchestrator calls start_turn(state) when DLL signals turn
-    2. LLM makes HTTP calls to /tool endpoint
-    3. Orchestrator calls wait_for_turn_end() which blocks
-    4. Orchestrator calls get_turn_result() to get actions
-    """
+    def __init__(self, turn_manager: "TurnManager", host: str = "localhost", port: int = 8765):
+        """Initialize HTTP server.
 
-    def __init__(self, host: str = "localhost", port: int = 8765, turn_timeout: float = 300.0):
+        Args:
+            turn_manager: TurnManager for DLL communication
+            host: Host to bind to
+            port: Port to listen on
+        """
         self.host = host
         self.port = port
-        self.mcp_server = CivMCPServer(turn_timeout=turn_timeout)
+        self.turn_manager = turn_manager
+        self.mcp_server = CivMCPServer(turn_manager)
         self.http_server: Optional[HTTPServer] = None
         self.thread: Optional[Thread] = None
 
@@ -112,54 +137,9 @@ class MCPHTTPServer:
         self.thread.start()
 
         logger.info(f"MCP HTTP Server started on http://{self.host}:{self.port}")
-        logger.info(f"Endpoints: /health, /state, /tools, /tool")
 
     def stop(self):
         """Stop the HTTP server."""
         if self.http_server:
             self.http_server.shutdown()
             logger.info("MCP HTTP Server stopped")
-
-    def start_turn(self, state: dict) -> None:
-        """Start a new turn - called by orchestrator when DLL signals turn."""
-        self.mcp_server.start_turn(state)
-
-    def wait_for_turn_end(self, timeout: Optional[float] = None) -> bool:
-        """Block until LLM calls end_turn or timeout. Returns True if ended normally."""
-        return self.mcp_server.wait_for_turn_end(timeout)
-
-    def get_turn_result(self) -> tuple[list, str]:
-        """Get (actions, notes) from the completed turn."""
-        return self.mcp_server.get_turn_result()
-
-
-def run_http_server(host: str = "localhost", port: int = 8765):
-    """Run the MCP HTTP server standalone."""
-    server = MCPHTTPServer(host, port)
-    server.start()
-
-    print(f"MCP HTTP Server running on http://{host}:{port}")
-    print("Press Ctrl+C to stop...")
-
-    try:
-        # Keep main thread alive
-        import time
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-        server.stop()
-
-
-if __name__ == "__main__":
-    import sys
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
-
-    host = sys.argv[1] if len(sys.argv) > 1 else "localhost"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
-
-    run_http_server(host, port)

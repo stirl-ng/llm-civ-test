@@ -1,17 +1,23 @@
 """
 Civ V LLM Orchestrator
 
-Bridges the Civ V DLL (named pipe) and LLM control.
+Bridges the Civ V DLL (named pipe) and LLM control via MCP HTTP.
 
-Modes:
-- --mcp: Turn-based MCP mode. LLM connects via HTTP, makes decisions, calls end_turn.
-- --debug: Display pipe messages without processing (for debugging)
+The orchestrator:
+1. Connects to the DLL via named pipe
+2. Starts an HTTP server for LLM tool calls
+3. For each turn:
+   - Receives turn_start from DLL
+   - Waits for LLM to make decisions via HTTP
+   - Forwards actions to DLL, returns results
+   - Ends turn when LLM calls end_turn
 """
 from __future__ import annotations
 
 import argparse
 import io
 import json
+import logging
 import os
 import sys
 import time
@@ -20,6 +26,9 @@ from typing import Optional
 from .formatting import format_message
 from .mcp_http_server import MCPHTTPServer
 from .pipe_server import NamedPipeServer
+from .turn_manager import TurnManager
+
+logger = logging.getLogger(__name__)
 
 
 class Transport:
@@ -50,7 +59,7 @@ class StdIOTransport(Transport):
 
 
 class WindowsPipeTransport(Transport):
-    """Transport using Windows named pipe (connects to existing pipe)."""
+    """Transport using Windows named pipe."""
 
     def __init__(self, pipe_name: str, retry_seconds: float = 0.5, timeout: float = 30.0):
         self.pipe_name = pipe_name
@@ -118,35 +127,38 @@ def run_debug_server(pipe_path: str, raw_mode: bool = False) -> None:
         server.stop()
 
 
-def run_mcp_mode(
+def run_orchestrator(
     transport: Transport,
     mcp_host: str,
     mcp_port: int,
     turn_timeout: float,
     once: bool = False,
 ) -> None:
-    """Run in MCP mode: LLM controls the game via HTTP tool calls.
+    """Run the orchestrator with interactive MCP protocol.
 
-    Flow per turn:
-    1. Receive state from DLL
-    2. Start turn (expose state to LLM via MCP)
-    3. Wait for LLM to call end_turn (or timeout)
-    4. Send queued actions back to DLL
+    Flow:
+    1. Wait for turn_start from DLL
+    2. Start turn, expose state via MCP HTTP
+    3. LLM makes tool calls (queries + actions)
+    4. LLM calls end_turn
+    5. Repeat for next turn
     """
+    # Create turn manager with transport
+    turn_manager = TurnManager(transport, action_timeout=30.0)
+
     # Start MCP HTTP server
-    mcp_server = MCPHTTPServer(mcp_host, mcp_port, turn_timeout=turn_timeout)
+    mcp_server = MCPHTTPServer(turn_manager, mcp_host, mcp_port)
     mcp_server.start()
 
-    print(f"[orchestrator] MCP mode active", file=sys.stderr)
-    print(f"[orchestrator] LLM endpoint: http://{mcp_host}:{mcp_port}/tool", file=sys.stderr)
-    print(f"[orchestrator] Turn timeout: {turn_timeout}s", file=sys.stderr)
+    print(f"[orchestrator] MCP server: http://{mcp_host}:{mcp_port}", file=sys.stderr)
+    print(f"[orchestrator] Waiting for DLL...", file=sys.stderr)
 
     try:
         while True:
-            # 1. Read state from DLL
+            # Read message from DLL
             line = transport.read_line()
             if line is None or line == "":
-                print("[orchestrator] Pipe closed", file=sys.stderr)
+                print("[orchestrator] DLL disconnected", file=sys.stderr)
                 break
 
             line = line.strip()
@@ -154,39 +166,34 @@ def run_mcp_mode(
                 continue
 
             try:
-                state = json.loads(line)
+                msg = json.loads(line)
             except json.JSONDecodeError as e:
-                err = {"error": "invalid_json", "detail": str(e)}
-                transport.write_line(json.dumps(err))
+                logger.error(f"Invalid JSON from DLL: {e}")
                 continue
 
-            turn_num = state.get("data", {}).get("turn", "?")
-            print(f"[orchestrator] Turn {turn_num}: waiting for LLM...", file=sys.stderr)
+            msg_type = msg.get("type")
 
-            # 2. Start turn - expose state to LLM
-            mcp_server.start_turn(state)
+            if msg_type == "turn_start":
+                # Start new turn
+                turn_num = msg.get("turn", "?")
+                player_id = msg.get("player_id", "?")
+                print(f"[orchestrator] Turn {turn_num} for player {player_id}", file=sys.stderr)
 
-            # 3. Wait for LLM to call end_turn
-            ended_normally = mcp_server.wait_for_turn_end()
+                turn_manager.start_turn(msg)
 
-            # 4. Get queued actions
-            actions, notes = mcp_server.get_turn_result()
+                # Wait for LLM to end turn (or timeout)
+                ended = turn_manager.wait_for_turn_end(timeout=turn_timeout)
 
-            if not ended_normally:
-                notes = f"TIMEOUT - {notes}" if notes else "TIMEOUT"
+                if not ended:
+                    print(f"[orchestrator] Turn {turn_num} timed out", file=sys.stderr)
 
-            # 5. Build response for DLL
-            response = {
-                "turn": turn_num,
-                "actions": actions,
-                "notes": notes,
-            }
+                print(f"[orchestrator] Turn {turn_num} complete", file=sys.stderr)
 
-            print(f"[orchestrator] Turn {turn_num}: sending {len(actions)} actions", file=sys.stderr)
-            transport.write_line(json.dumps(response))
+                if once:
+                    break
 
-            if once:
-                break
+            else:
+                logger.warning(f"Unexpected message type: {msg_type}")
 
     except KeyboardInterrupt:
         print("\n[orchestrator] Interrupted", file=sys.stderr)
@@ -194,26 +201,40 @@ def run_mcp_mode(
         mcp_server.stop()
 
 
+def setup_logging(verbose: bool = False) -> None:
+    """Configure logging."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stderr)]
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Civ V LLM Orchestrator - bridges DLL and LLM via MCP"
+        description="Civ V LLM Orchestrator - bridges DLL and LLM via MCP HTTP"
     )
+
+    # Transport options
     parser.add_argument("--pipe", help="Named pipe path")
     parser.add_argument("--stdio", action="store_true", help="Use stdin/stdout (testing)")
     parser.add_argument("--once", action="store_true", help="Process one turn then exit")
 
-    # MCP options
-    parser.add_argument("--mcp", action="store_true", help="Run in MCP mode (LLM via HTTP)")
+    # MCP server options
     parser.add_argument("--mcp-host", default="localhost", help="MCP server host")
     parser.add_argument("--mcp-port", type=int, default=8765, help="MCP server port")
     parser.add_argument("--turn-timeout", type=float, default=300.0,
-                        help="Max seconds to wait for LLM per turn (default: 300)")
+                        help="Max seconds per turn (default: 300)")
 
     # Debug options
     parser.add_argument("--debug", action="store_true", help="Debug mode: display messages only")
     parser.add_argument("--raw", action="store_true", help="In debug mode, show raw JSON")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
+
+    setup_logging(args.verbose)
 
     # Debug mode
     if args.debug:
@@ -227,21 +248,18 @@ def main() -> None:
         print("[orchestrator] Using stdio transport", file=sys.stderr)
     else:
         pipe = args.pipe or os.environ.get("CIVV_PIPE") or DEFAULT_PIPE
+        print(f"[orchestrator] Connecting to pipe: {pipe}", file=sys.stderr)
         transport = WindowsPipeTransport(pipe)
-        print(f"[orchestrator] Connected to pipe: {pipe}", file=sys.stderr)
+        print(f"[orchestrator] Connected", file=sys.stderr)
 
-    # MCP mode (default and only real mode now)
-    if args.mcp or True:  # Always MCP mode for now
-        run_mcp_mode(
-            transport=transport,
-            mcp_host=args.mcp_host,
-            mcp_port=args.mcp_port,
-            turn_timeout=args.turn_timeout,
-            once=args.once,
-        )
-    else:
-        print("[orchestrator] Error: --mcp mode required", file=sys.stderr)
-        sys.exit(1)
+    # Run orchestrator
+    run_orchestrator(
+        transport=transport,
+        mcp_host=args.mcp_host,
+        mcp_port=args.mcp_port,
+        turn_timeout=args.turn_timeout,
+        once=args.once,
+    )
 
 
 if __name__ == "__main__":

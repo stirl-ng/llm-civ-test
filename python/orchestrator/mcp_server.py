@@ -2,19 +2,20 @@
 MCP Server for Civilization V LLM Orchestrator
 
 Provides tools for LLMs to:
-- Query game state (cached, no DLL roundtrip)
-- Send commands to queue for the DLL
-- End their turn when done deciding
+- Query game state (from turn manager's cache)
+- Send actions to DLL (via turn manager, blocking)
+- End turn when done deciding
 
-The orchestrator waits for the LLM to call end_turn before
-sending queued actions to the DLL.
+The turn manager handles the actual DLL communication.
 """
 
 import logging
-import threading
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from .formatting import format_game_state
+
+if TYPE_CHECKING:
+    from .turn_manager import TurnManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,159 +25,90 @@ AVAILABLE_TOOLS = [
     {
         "name": "get_game_state",
         "description": "Get the current game state. Optionally filter by category.",
-        "parameters": ["category", "format"],
+        "parameters": {"category": "optional string", "format": "optional: json|human_readable"},
     },
     {
         "name": "send_action",
-        "description": "Queue an action/command for this turn.",
-        "parameters": ["action", "notes"],
-    },
-    {
-        "name": "send_actions",
-        "description": "Queue multiple actions at once.",
-        "parameters": ["actions", "notes"],
+        "description": "Execute a game action. Blocks until DLL responds with result.",
+        "parameters": {"action": "required object", "notes": "optional string"},
     },
     {
         "name": "get_cities",
         "description": "Get detailed information about all cities.",
-        "parameters": ["city_id"],
+        "parameters": {"city_id": "optional int"},
     },
     {
         "name": "get_units",
         "description": "Get information about all units.",
-        "parameters": ["unit_id"],
+        "parameters": {"unit_id": "optional int"},
     },
     {
         "name": "get_tech_tree",
         "description": "Get technology tree status.",
-        "parameters": [],
+        "parameters": {},
     },
     {
         "name": "get_diplomacy",
         "description": "Get diplomatic status with all known civilizations.",
-        "parameters": [],
+        "parameters": {},
     },
     {
         "name": "get_available_choices",
         "description": "Get all pending decisions (tech, policy, production, etc.)",
-        "parameters": [],
+        "parameters": {},
     },
     {
         "name": "get_victory_progress",
         "description": "Get progress toward all victory conditions.",
-        "parameters": [],
+        "parameters": {},
     },
     {
         "name": "get_resources",
         "description": "Get strategic and luxury resources.",
-        "parameters": [],
+        "parameters": {},
     },
     {
         "name": "format_state",
         "description": "Get a human-readable formatted version of the game state.",
-        "parameters": ["raw"],
+        "parameters": {"raw": "optional bool"},
+    },
+    {
+        "name": "get_state_refresh",
+        "description": "Force a full state refresh from the DLL.",
+        "parameters": {},
     },
     {
         "name": "end_turn",
-        "description": "Signal that you are done with your turn. All queued actions will be sent to the game.",
-        "parameters": ["notes"],
+        "description": "Signal that you are done. Actions are sent to DLL and turn advances.",
+        "parameters": {"notes": "optional string"},
     },
 ]
 
 
 class CivMCPServer:
-    """Tool executor that bridges LLM requests to Civ V game state.
+    """Tool executor that bridges LLM requests to Civ V via turn manager."""
 
-    Turn-based flow:
-    1. Orchestrator calls start_turn(state) when DLL signals LLM's turn
-    2. LLM queries state and queues actions via tools
-    3. LLM calls end_turn when done
-    4. Orchestrator calls wait_for_turn_end() which blocks until end_turn
-    5. Orchestrator gets queued actions and sends to DLL
-    """
-
-    def __init__(self, turn_timeout: float = 300.0):
-        """Initialize the MCP server.
+    def __init__(self, turn_manager: "TurnManager"):
+        """Initialize MCP server.
 
         Args:
-            turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
+            turn_manager: TurnManager instance for DLL communication
         """
-        self.current_state: Optional[dict[str, Any]] = None
-        self.pending_actions: list[dict[str, Any]] = []
-        self.turn_timeout = turn_timeout
+        self.turn_manager = turn_manager
 
-        # Turn management
-        self._turn_active = False
-        self._turn_ended = threading.Event()
-        self._turn_notes: str = ""
-        self._lock = threading.Lock()
-
-    def start_turn(self, state: dict[str, Any]) -> None:
-        """Start a new turn with the given game state.
-
-        Called by orchestrator when DLL signals it's the LLM's turn.
-        """
-        with self._lock:
-            self.current_state = state
-            self.pending_actions.clear()
-            self._turn_notes = ""
-            self._turn_ended.clear()
-            self._turn_active = True
-
-        turn_num = state.get("data", {}).get("turn", "?")
-        logger.info(f"Turn {turn_num} started - waiting for LLM decisions")
-
-    def wait_for_turn_end(self, timeout: Optional[float] = None) -> bool:
-        """Block until LLM calls end_turn or timeout expires.
-
-        Args:
-            timeout: Max seconds to wait (uses self.turn_timeout if None)
-
-        Returns:
-            True if turn ended normally, False if timed out
-        """
-        wait_time = timeout if timeout is not None else self.turn_timeout
-        ended = self._turn_ended.wait(timeout=wait_time)
-
-        with self._lock:
-            self._turn_active = False
-
-        if not ended:
-            logger.warning(f"Turn timed out after {wait_time}s")
-
-        return ended
-
-    def get_turn_result(self) -> tuple[list[dict[str, Any]], str]:
-        """Get the actions and notes from the completed turn.
-
-        Returns:
-            Tuple of (actions_list, notes_string)
-        """
-        with self._lock:
-            actions = self.pending_actions[:]
-            self.pending_actions.clear()
-            notes = self._turn_notes
-        return actions, notes
+    @property
+    def current_state(self) -> Optional[dict[str, Any]]:
+        """Get current game state from turn manager."""
+        return self.turn_manager.current_state
 
     def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a tool and return results."""
 
+        # Query tools - read from cache
         if name == "get_game_state":
             return self._get_game_state(
                 category=arguments.get("category"),
                 format_type=arguments.get("format", "json")
-            )
-
-        elif name == "send_action":
-            return self._send_action(
-                action=arguments.get("action", {}),
-                notes=arguments.get("notes", "")
-            )
-
-        elif name == "send_actions":
-            return self._send_actions(
-                actions=arguments.get("actions", []),
-                notes=arguments.get("notes", "")
             )
 
         elif name == "get_cities":
@@ -203,35 +135,57 @@ class CivMCPServer:
         elif name == "format_state":
             return self._format_state(raw=arguments.get("raw", False))
 
+        # Action tools - forward to DLL via turn manager
+        elif name == "send_action":
+            action = arguments.get("action")
+            if not action:
+                return {"success": False, "error": "Missing 'action' parameter"}
+            return self._send_action(action, notes=arguments.get("notes", ""))
+
+        elif name == "get_state_refresh":
+            return self._get_state_refresh()
+
+        # Turn control
         elif name == "end_turn":
             return self._end_turn(notes=arguments.get("notes", ""))
 
         else:
             return {"error": f"Unknown tool: {name}"}
 
+    def _send_action(self, action: dict[str, Any], notes: str = "") -> dict[str, Any]:
+        """Execute an action via DLL and return result."""
+        if not self.turn_manager.turn_active:
+            return {"success": False, "error": "No active turn - cannot execute action"}
+
+        logger.info(f"Executing action: {action.get('kind', 'unknown')}")
+
+        # Forward to turn manager (blocks until DLL responds)
+        result = self.turn_manager.execute_action(action)
+
+        if notes:
+            result["notes"] = notes
+
+        return result
+
+    def _get_state_refresh(self) -> dict[str, Any]:
+        """Force full state refresh from DLL."""
+        return self.turn_manager.request_state_refresh()
+
     def _end_turn(self, notes: str = "") -> dict[str, Any]:
-        """Signal that the LLM is done with its turn."""
-        with self._lock:
-            if not self._turn_active:
-                return {"error": "No active turn to end"}
+        """End the current turn."""
+        if not self.turn_manager.turn_active:
+            return {"success": False, "error": "No active turn to end"}
 
-            self._turn_notes = notes
-            action_count = len(self.pending_actions)
-            self._turn_ended.set()
+        logger.info(f"Ending turn{': ' + notes if notes else ''}")
+        return self.turn_manager.end_turn(notes)
 
-        logger.info(f"Turn ended by LLM with {action_count} queued actions")
-        return {
-            "status": "turn_ended",
-            "actions_queued": action_count,
-            "notes": notes
-        }
+    # Query methods - read from cached state
 
     def _get_game_state(self, category: Optional[str] = None, format_type: str = "json") -> dict[str, Any]:
         """Get current game state, optionally filtered by category."""
-        if not self.current_state:
-            return {"error": "No game state available - not your turn yet"}
-
-        state = self.current_state.get("data", {})
+        state = self.current_state
+        if not state:
+            return {"error": "No game state available - wait for your turn"}
 
         if category:
             if category in state:
@@ -245,44 +199,13 @@ class CivMCPServer:
 
         return state
 
-    def _send_action(self, action: dict[str, Any], notes: str = "") -> dict[str, Any]:
-        """Queue a single action to be sent to the game."""
-        with self._lock:
-            if not self._turn_active:
-                return {"error": "Cannot queue actions - no active turn"}
-            self.pending_actions.append(action)
-            count = len(self.pending_actions)
-
-        logger.info(f"Action queued: {action}")
-        return {
-            "status": "queued",
-            "action": action,
-            "notes": notes,
-            "total_pending": count
-        }
-
-    def _send_actions(self, actions: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
-        """Queue multiple actions to be sent to the game."""
-        with self._lock:
-            if not self._turn_active:
-                return {"error": "Cannot queue actions - no active turn"}
-            self.pending_actions.extend(actions)
-            count = len(self.pending_actions)
-
-        logger.info(f"{len(actions)} actions queued")
-        return {
-            "status": "queued",
-            "action_count": len(actions),
-            "notes": notes,
-            "total_pending": count
-        }
-
     def _get_cities(self, city_id: Optional[int] = None) -> dict[str, Any]:
         """Get city information."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        cities = self.current_state.get("data", {}).get("cities", [])
+        cities = state.get("cities", [])
 
         if city_id is not None:
             city = next((c for c in cities if c.get("id") == city_id), None)
@@ -294,10 +217,11 @@ class CivMCPServer:
 
     def _get_units(self, unit_id: Optional[int] = None) -> dict[str, Any]:
         """Get unit information."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        units = self.current_state.get("data", {}).get("units", [])
+        units = state.get("units", [])
 
         if unit_id is not None:
             unit = next((u for u in units if u.get("id") == unit_id), None)
@@ -309,75 +233,72 @@ class CivMCPServer:
 
     def _get_tech_tree(self) -> dict[str, Any]:
         """Get technology tree information."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        return self.current_state.get("data", {}).get("technology", {})
+        return state.get("technologies", state.get("technology", {}))
 
     def _get_diplomacy(self) -> dict[str, Any]:
         """Get diplomacy information."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        return self.current_state.get("data", {}).get("diplomacy", {})
+        return state.get("diplomacy", {})
 
     def _get_available_choices(self) -> dict[str, Any]:
         """Get all pending choices/decisions."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        data = self.current_state.get("data", {})
+        pending = state.get("pending_decisions", {})
+        if pending:
+            return {"pending_choices": pending, "has_choices": True}
+
+        # Fallback: check legacy fields
         choices = {}
-
-        if data.get("needs_tech_choice"):
-            choices["tech"] = data.get("available_techs", [])
-
-        if data.get("needs_policy_choice"):
-            choices["policy"] = data.get("available_policies", [])
-
-        if data.get("needs_production_choice"):
-            choices["production"] = data.get("cities_needing_production", [])
-
-        if data.get("needs_religion_choice"):
-            choices["religion"] = data.get("religion_options", {})
-
-        if data.get("needs_trade_route_assignment"):
-            choices["trade_routes"] = data.get("available_trade_routes", [])
+        if state.get("needs_tech_choice"):
+            choices["tech"] = state.get("available_techs", [])
+        if state.get("needs_policy_choice"):
+            choices["policy"] = state.get("available_policies", [])
+        if state.get("needs_production_choice"):
+            choices["production"] = state.get("cities_needing_production", [])
 
         return {"pending_choices": choices, "has_choices": len(choices) > 0}
 
     def _get_victory_progress(self) -> dict[str, Any]:
         """Get victory condition progress."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        data = self.current_state.get("data", {})
         return {
-            "victory_conditions": data.get("victory_conditions", []),
-            "victory_progress": data.get("victory_progress", {})
+            "victory_conditions": state.get("victory_conditions", []),
+            "victory_progress": state.get("victory_progress", {})
         }
 
     def _get_resources(self) -> dict[str, Any]:
         """Get resource information."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        data = self.current_state.get("data", {})
-        return {
-            "strategic": data.get("strategic_resources", {}),
-            "luxury": data.get("luxury_resources", {}),
-            "total": data.get("resources", {})
-        }
+        return state.get("resources", {
+            "strategic": state.get("strategic_resources", {}),
+            "luxury": state.get("luxury_resources", {}),
+        })
 
     def _format_state(self, raw: bool = False) -> dict[str, Any]:
         """Get formatted game state."""
-        if not self.current_state:
+        state = self.current_state
+        if not state:
             return {"error": "No game state available"}
 
-        data = self.current_state.get("data", {})
-        formatted = format_game_state(data)
+        formatted = format_game_state(state)
 
         if raw:
-            return {"formatted": formatted, "raw": data}
+            return {"formatted": formatted, "raw": state}
 
         return {"formatted": formatted}
