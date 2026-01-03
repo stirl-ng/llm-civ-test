@@ -6,6 +6,7 @@ Bridges the Civ V DLL (named pipe) and LLM control.
 Modes:
 - --mcp: Turn-based MCP mode. LLM connects via HTTP, makes decisions, calls end_turn.
 - --debug: Display pipe messages without processing (for debugging)
+- --dashboard: Start the Flask monitoring dashboard
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import json
 import os
 import sys
 import time
+from threading import Thread
 from typing import Optional
 
 from .formatting import format_message
@@ -124,6 +126,8 @@ def run_mcp_mode(
     mcp_port: int,
     turn_timeout: float,
     once: bool = False,
+    dashboard_host: Optional[str] = None,
+    dashboard_port: int = 5000,
 ) -> None:
     """Run in MCP mode: LLM controls the game via HTTP tool calls.
 
@@ -140,6 +144,24 @@ def run_mcp_mode(
     print(f"[orchestrator] MCP mode active", file=sys.stderr)
     print(f"[orchestrator] LLM endpoint: http://{mcp_host}:{mcp_port}/tool", file=sys.stderr)
     print(f"[orchestrator] Turn timeout: {turn_timeout}s", file=sys.stderr)
+
+    # Start dashboard if requested
+    if dashboard_host is not None:
+        from .dashboard import create_dashboard_app, setup_dashboard_logging
+
+        setup_dashboard_logging()
+        app = create_dashboard_app(mcp_server.mcp_server)
+
+        def run_dashboard():
+            # Suppress Flask's default logging for cleaner output
+            import logging
+            log = logging.getLogger("werkzeug")
+            log.setLevel(logging.WARNING)
+            app.run(host=dashboard_host, port=dashboard_port, threaded=True, use_reloader=False)
+
+        dashboard_thread = Thread(target=run_dashboard, daemon=True)
+        dashboard_thread.start()
+        print(f"[orchestrator] Dashboard: http://{dashboard_host}:{dashboard_port}", file=sys.stderr)
 
     try:
         while True:
@@ -213,12 +235,25 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="Debug mode: display messages only")
     parser.add_argument("--raw", action="store_true", help="In debug mode, show raw JSON")
 
+    # Dashboard options
+    parser.add_argument("--dashboard", action="store_true", help="Start the monitoring dashboard")
+    parser.add_argument("--dashboard-host", default="0.0.0.0", help="Dashboard host (default: 0.0.0.0)")
+    parser.add_argument("--dashboard-port", type=int, default=5000, help="Dashboard port (default: 5000)")
+
     args = parser.parse_args()
 
     # Debug mode
     if args.debug:
         pipe = args.pipe or DEFAULT_DEBUG_PIPE
         run_debug_server(pipe, raw_mode=args.raw)
+        return
+
+    # Standalone dashboard mode (no pipe connection)
+    if args.dashboard and args.stdio:
+        from .dashboard import run_dashboard
+
+        print(f"[orchestrator] Starting standalone dashboard on port {args.dashboard_port}", file=sys.stderr)
+        run_dashboard(host=args.dashboard_host, port=args.dashboard_port)
         return
 
     # Set up transport
@@ -238,6 +273,8 @@ def main() -> None:
             mcp_port=args.mcp_port,
             turn_timeout=args.turn_timeout,
             once=args.once,
+            dashboard_host=args.dashboard_host if args.dashboard else None,
+            dashboard_port=args.dashboard_port,
         )
     else:
         print("[orchestrator] Error: --mcp mode required", file=sys.stderr)
