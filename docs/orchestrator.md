@@ -1,27 +1,133 @@
-Orchestrator
-============
+# Orchestrator
 
-Bridges the Civ V DLL (named pipe) and the Agent runtime. Reads state JSON lines, validates against `schemas/state.schema.json`, calls the agent, validates actions against `schemas/actions.schema.json`, then writes action JSON lines back.
+The orchestrator bridges the Civ V DLL and external LLMs. It manages turn flow, caches game state, and exposes tools via HTTP for LLM decision-making.
 
-Run
----
+See [protocol.md](protocol.md) for the full protocol specification.
 
-- With pipe (default `\\.\pipe\civv_llm` or `CIVV_PIPE`):
-  - `python -m orchestrator --agent-config python/configs/experiments/minimal.yaml`
+## Architecture
 
-- With stdio (for testing without the game):
-  - `python -m orchestrator --stdio --once --agent-config python/configs/experiments/minimal.yaml`
-  - Then paste one line of JSON matching `state.schema.json`; the orchestrator outputs one line of actions.
+```
+DLL ◄──Named Pipe──► Orchestrator ◄──HTTP──► LLM
+                          │
+                     MCP HTTP Server
+                     localhost:8765
+```
 
-Config
-------
+## Quick Start
 
-- Reuses the experiment config shape for `backend`, `tools`, and `strategy`.
-- Pipe can be set via config `orchestrator.pipe` or `CIVV_PIPE` env var.
+```bash
+# Run orchestrator (connects to DLL pipe, starts MCP server)
+python -m orchestrator
 
-Notes
------
+# With options
+python -m orchestrator --mcp-port 9000 --turn-timeout 120
 
-- Windows named pipes can be opened by Python as a binary file; the orchestrator retries connect for up to ~30s.
-- On validation failure, the orchestrator returns a no-op action with error notes to keep the game loop safe.
+# Debug mode (just display DLL messages, no LLM)
+python -m orchestrator --debug
 
+# Test with stdio instead of pipe
+python -m orchestrator --stdio --once
+```
+
+## Command Line Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--pipe` | `\\.\pipe\civv_llm` | Named pipe path |
+| `--stdio` | - | Use stdin/stdout (for testing) |
+| `--once` | - | Process one turn then exit |
+| `--mcp-host` | `localhost` | MCP HTTP server host |
+| `--mcp-port` | `8765` | MCP HTTP server port |
+| `--turn-timeout` | `300` | Max seconds per turn |
+| `--debug` | - | Debug mode: display messages only |
+| `--raw` | - | In debug mode, show raw JSON |
+
+## Turn Flow
+
+1. **DLL sends `turn_start`** with full game state
+2. **Orchestrator caches state** and opens turn for LLM
+3. **LLM makes HTTP tool calls** to `/tool` endpoint:
+   - Query tools read from cache (fast)
+   - Action tools forward to DLL, wait for result
+4. **LLM calls `end_turn`** when done deciding
+5. **Orchestrator sends `end_turn`** to DLL
+6. **DLL advances** to next player
+
+## MCP HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| GET | `/state` | Current cached game state |
+| GET | `/tools` | List available tools |
+| POST | `/tool` | Execute a tool |
+
+### Tool Call Example
+
+```bash
+# Query state
+curl -X POST http://localhost:8765/tool \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "get_units", "arguments": {}}'
+
+# Send action
+curl -X POST http://localhost:8765/tool \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "send_action", "arguments": {"action": {"kind": "move_unit", "unit_id": 5, "to": [10, 12]}}}'
+
+# End turn
+curl -X POST http://localhost:8765/tool \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "end_turn", "arguments": {"notes": "Moved warrior, started granary"}}'
+```
+
+## Available Tools
+
+### Query Tools (Read from Cache)
+
+| Tool | Description |
+|------|-------------|
+| `get_game_state` | Full or filtered game state |
+| `get_cities` | City information |
+| `get_units` | Unit information |
+| `get_tech_tree` | Technology status |
+| `get_diplomacy` | Diplomatic relations |
+| `get_resources` | Resources owned |
+| `get_victory_progress` | Victory condition status |
+| `get_available_choices` | Pending decisions |
+| `format_state` | Human-readable summary |
+
+### Action Tools (Forward to DLL)
+
+| Tool | Description |
+|------|-------------|
+| `send_action` | Execute a game action |
+| `get_state_refresh` | Force full state reload |
+
+### Turn Control
+
+| Tool | Description |
+|------|-------------|
+| `end_turn` | Signal done, complete turn |
+
+## Timeouts
+
+- **Turn timeout**: LLM has N seconds to complete their turn (default 300s)
+- **Action timeout**: Individual DLL actions timeout after 30s
+- If timeout occurs, turn ends with whatever actions completed
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `orchestrator/__main__.py` | Entry point, CLI, turn loop |
+| `orchestrator/mcp_server.py` | Tool executor, turn state |
+| `orchestrator/mcp_http_server.py` | HTTP server wrapper |
+| `orchestrator/pipe_server.py` | Named pipe server (debug mode) |
+| `orchestrator/formatting.py` | State formatting utilities |
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `CIVV_PIPE` | Override default pipe path |

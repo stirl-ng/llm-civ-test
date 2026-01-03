@@ -2,195 +2,164 @@
 MCP Server for Civilization V LLM Orchestrator
 
 Provides tools for LLMs to:
-- Query game state
-- Send commands to the DLL
-- Get available actions/choices
-- Format game data for analysis
+- Query game state (cached, no DLL roundtrip)
+- Send commands to queue for the DLL
+- End their turn when done deciding
+
+The orchestrator waits for the LLM to call end_turn before
+sending queued actions to the DLL.
 """
 
-import asyncio
-import json
 import logging
+import threading
 from typing import Any, Optional
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
-from .formatting import format_game_state, format_message
+from .formatting import format_game_state
 
 logger = logging.getLogger(__name__)
 
 
+# Tool definitions for documentation/discovery
+AVAILABLE_TOOLS = [
+    {
+        "name": "get_game_state",
+        "description": "Get the current game state. Optionally filter by category.",
+        "parameters": ["category", "format"],
+    },
+    {
+        "name": "send_action",
+        "description": "Queue an action/command for this turn.",
+        "parameters": ["action", "notes"],
+    },
+    {
+        "name": "send_actions",
+        "description": "Queue multiple actions at once.",
+        "parameters": ["actions", "notes"],
+    },
+    {
+        "name": "get_cities",
+        "description": "Get detailed information about all cities.",
+        "parameters": ["city_id"],
+    },
+    {
+        "name": "get_units",
+        "description": "Get information about all units.",
+        "parameters": ["unit_id"],
+    },
+    {
+        "name": "get_tech_tree",
+        "description": "Get technology tree status.",
+        "parameters": [],
+    },
+    {
+        "name": "get_diplomacy",
+        "description": "Get diplomatic status with all known civilizations.",
+        "parameters": [],
+    },
+    {
+        "name": "get_available_choices",
+        "description": "Get all pending decisions (tech, policy, production, etc.)",
+        "parameters": [],
+    },
+    {
+        "name": "get_victory_progress",
+        "description": "Get progress toward all victory conditions.",
+        "parameters": [],
+    },
+    {
+        "name": "get_resources",
+        "description": "Get strategic and luxury resources.",
+        "parameters": [],
+    },
+    {
+        "name": "format_state",
+        "description": "Get a human-readable formatted version of the game state.",
+        "parameters": ["raw"],
+    },
+    {
+        "name": "end_turn",
+        "description": "Signal that you are done with your turn. All queued actions will be sent to the game.",
+        "parameters": ["notes"],
+    },
+]
+
+
 class CivMCPServer:
-    """MCP Server that bridges LLM requests to Civ V orchestrator."""
+    """Tool executor that bridges LLM requests to Civ V game state.
 
-    def __init__(self):
-        self.server = Server("civ5-orchestrator")
+    Turn-based flow:
+    1. Orchestrator calls start_turn(state) when DLL signals LLM's turn
+    2. LLM queries state and queues actions via tools
+    3. LLM calls end_turn when done
+    4. Orchestrator calls wait_for_turn_end() which blocks until end_turn
+    5. Orchestrator gets queued actions and sends to DLL
+    """
+
+    def __init__(self, turn_timeout: float = 300.0):
+        """Initialize the MCP server.
+
+        Args:
+            turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
+        """
         self.current_state: Optional[dict[str, Any]] = None
-        self.last_action_result: Optional[dict[str, Any]] = None
         self.pending_actions: list[dict[str, Any]] = []
+        self.turn_timeout = turn_timeout
 
-        # Register all tools
-        self._register_tools()
+        # Turn management
+        self._turn_active = False
+        self._turn_ended = threading.Event()
+        self._turn_notes: str = ""
+        self._lock = threading.Lock()
 
-    def _register_tools(self):
-        """Register all available MCP tools."""
+    def start_turn(self, state: dict[str, Any]) -> None:
+        """Start a new turn with the given game state.
 
-        @self.server.list_tools()
-        async def list_tools() -> list[Tool]:
-            """List all available tools for controlling Civilization V."""
-            return [
-                Tool(
-                    name="get_game_state",
-                    description="Get the current game state. Optionally filter by category (e.g., 'game_level', 'cities', 'units', 'technology', 'diplomacy')",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "category": {
-                                "type": "string",
-                                "description": "Optional category to filter (game_level, cities, units, technology, diplomacy, etc.)",
-                            },
-                            "format": {
-                                "type": "string",
-                                "enum": ["json", "human_readable"],
-                                "description": "Output format: 'json' or 'human_readable'",
-                                "default": "json"
-                            }
-                        },
-                    },
-                ),
-                Tool(
-                    name="send_action",
-                    description="Send an action/command to the game. Actions can include unit commands, production orders, research choices, policy selections, etc.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "object",
-                                "description": "The action object to send to the game (e.g., {'research': 'TECH_POTTERY'})",
-                            },
-                            "notes": {
-                                "type": "string",
-                                "description": "Optional notes about why this action was chosen",
-                            }
-                        },
-                        "required": ["action"],
-                    },
-                ),
-                Tool(
-                    name="send_actions",
-                    description="Send multiple actions at once. Useful for coordinating complex multi-action turns.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "actions": {
-                                "type": "array",
-                                "description": "Array of action objects",
-                                "items": {"type": "object"}
-                            },
-                            "notes": {
-                                "type": "string",
-                                "description": "Optional notes about the strategy",
-                            }
-                        },
-                        "required": ["actions"],
-                    },
-                ),
-                Tool(
-                    name="get_cities",
-                    description="Get detailed information about all cities, including production, buildings, population, etc.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "city_id": {
-                                "type": "integer",
-                                "description": "Optional: Get info for specific city ID only",
-                            }
-                        },
-                    },
-                ),
-                Tool(
-                    name="get_units",
-                    description="Get information about all military and civilian units, including positions, health, and available commands.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "unit_id": {
-                                "type": "integer",
-                                "description": "Optional: Get info for specific unit ID only",
-                            }
-                        },
-                    },
-                ),
-                Tool(
-                    name="get_tech_tree",
-                    description="Get technology tree status: researched techs, current research, available options, and costs.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="get_diplomacy",
-                    description="Get diplomatic status with all known civilizations, including relationships, wars, and agreements.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="get_available_choices",
-                    description="Get all pending decisions that need to be made (tech choice, policy choice, production choices, etc.)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="get_victory_progress",
-                    description="Get progress toward all victory conditions (Domination, Science, Culture, Diplomatic, Time)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="get_resources",
-                    description="Get strategic and luxury resources: available quantities, sources, and trades.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="format_state",
-                    description="Get a human-readable formatted version of the game state for analysis.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "raw": {
-                                "type": "boolean",
-                                "description": "Include raw JSON alongside formatted output",
-                                "default": False
-                            }
-                        },
-                    },
-                ),
-            ]
+        Called by orchestrator when DLL signals it's the LLM's turn.
+        """
+        with self._lock:
+            self.current_state = state
+            self.pending_actions.clear()
+            self._turn_notes = ""
+            self._turn_ended.clear()
+            self._turn_active = True
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            """Handle tool calls from the LLM."""
-            try:
-                result = await self._execute_tool(name, arguments)
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
-            except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}", exc_info=True)
-                return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+        turn_num = state.get("data", {}).get("turn", "?")
+        logger.info(f"Turn {turn_num} started - waiting for LLM decisions")
 
-    async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Execute a specific tool and return results."""
+    def wait_for_turn_end(self, timeout: Optional[float] = None) -> bool:
+        """Block until LLM calls end_turn or timeout expires.
+
+        Args:
+            timeout: Max seconds to wait (uses self.turn_timeout if None)
+
+        Returns:
+            True if turn ended normally, False if timed out
+        """
+        wait_time = timeout if timeout is not None else self.turn_timeout
+        ended = self._turn_ended.wait(timeout=wait_time)
+
+        with self._lock:
+            self._turn_active = False
+
+        if not ended:
+            logger.warning(f"Turn timed out after {wait_time}s")
+
+        return ended
+
+    def get_turn_result(self) -> tuple[list[dict[str, Any]], str]:
+        """Get the actions and notes from the completed turn.
+
+        Returns:
+            Tuple of (actions_list, notes_string)
+        """
+        with self._lock:
+            actions = self.pending_actions[:]
+            self.pending_actions.clear()
+            notes = self._turn_notes
+        return actions, notes
+
+    def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute a tool and return results."""
 
         if name == "get_game_state":
             return self._get_game_state(
@@ -200,13 +169,13 @@ class CivMCPServer:
 
         elif name == "send_action":
             return self._send_action(
-                action=arguments["action"],
+                action=arguments.get("action", {}),
                 notes=arguments.get("notes", "")
             )
 
         elif name == "send_actions":
             return self._send_actions(
-                actions=arguments["actions"],
+                actions=arguments.get("actions", []),
                 notes=arguments.get("notes", "")
             )
 
@@ -234,29 +203,42 @@ class CivMCPServer:
         elif name == "format_state":
             return self._format_state(raw=arguments.get("raw", False))
 
+        elif name == "end_turn":
+            return self._end_turn(notes=arguments.get("notes", ""))
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
-    def update_state(self, state: dict[str, Any]) -> None:
-        """Update the current game state (called by orchestrator)."""
-        self.current_state = state
-        logger.info(f"Game state updated: turn {state.get('data', {}).get('turn', '?')}")
+    def _end_turn(self, notes: str = "") -> dict[str, Any]:
+        """Signal that the LLM is done with its turn."""
+        with self._lock:
+            if not self._turn_active:
+                return {"error": "No active turn to end"}
+
+            self._turn_notes = notes
+            action_count = len(self.pending_actions)
+            self._turn_ended.set()
+
+        logger.info(f"Turn ended by LLM with {action_count} queued actions")
+        return {
+            "status": "turn_ended",
+            "actions_queued": action_count,
+            "notes": notes
+        }
 
     def _get_game_state(self, category: Optional[str] = None, format_type: str = "json") -> dict[str, Any]:
         """Get current game state, optionally filtered by category."""
         if not self.current_state:
-            return {"error": "No game state available"}
+            return {"error": "No game state available - not your turn yet"}
 
         state = self.current_state.get("data", {})
 
-        # Filter by category if requested
         if category:
             if category in state:
                 state = {category: state[category]}
             else:
-                return {"error": f"Category '{category}' not found in state", "available": list(state.keys())}
+                return {"error": f"Category '{category}' not found", "available": list(state.keys())}
 
-        # Format if requested
         if format_type == "human_readable":
             formatted = format_game_state(state)
             return {"formatted": formatted, "json": state}
@@ -265,31 +247,35 @@ class CivMCPServer:
 
     def _send_action(self, action: dict[str, Any], notes: str = "") -> dict[str, Any]:
         """Queue a single action to be sent to the game."""
-        self.pending_actions.append(action)
+        with self._lock:
+            if not self._turn_active:
+                return {"error": "Cannot queue actions - no active turn"}
+            self.pending_actions.append(action)
+            count = len(self.pending_actions)
+
         logger.info(f"Action queued: {action}")
         return {
             "status": "queued",
             "action": action,
             "notes": notes,
-            "total_pending": len(self.pending_actions)
+            "total_pending": count
         }
 
     def _send_actions(self, actions: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
         """Queue multiple actions to be sent to the game."""
-        self.pending_actions.extend(actions)
+        with self._lock:
+            if not self._turn_active:
+                return {"error": "Cannot queue actions - no active turn"}
+            self.pending_actions.extend(actions)
+            count = len(self.pending_actions)
+
         logger.info(f"{len(actions)} actions queued")
         return {
             "status": "queued",
             "action_count": len(actions),
             "notes": notes,
-            "total_pending": len(self.pending_actions)
+            "total_pending": count
         }
-
-    def get_pending_actions(self) -> list[dict[str, Any]]:
-        """Get all pending actions (called by orchestrator)."""
-        actions = self.pending_actions[:]
-        self.pending_actions.clear()
-        return actions
 
     def _get_cities(self, city_id: Optional[int] = None) -> dict[str, Any]:
         """Get city information."""
@@ -343,7 +329,6 @@ class CivMCPServer:
         data = self.current_state.get("data", {})
         choices = {}
 
-        # Extract various choice requirements
         if data.get("needs_tech_choice"):
             choices["tech"] = data.get("available_techs", [])
 
@@ -396,28 +381,3 @@ class CivMCPServer:
             return {"formatted": formatted, "raw": data}
 
         return {"formatted": formatted}
-
-    async def run(self):
-        """Run the MCP server using stdio transport."""
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("MCP Server starting on stdio...")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options()
-            )
-
-
-async def run_mcp_server():
-    """Entry point for running the MCP server."""
-    server = CivMCPServer()
-    await server.run()
-
-
-if __name__ == "__main__":
-    # Run standalone MCP server
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
-    asyncio.run(run_mcp_server())
