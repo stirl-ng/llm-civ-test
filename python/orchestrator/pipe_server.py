@@ -7,6 +7,9 @@ from ctypes import wintypes
 from typing import Any, Callable, Optional
 
 from .logging_setup import get_logger
+from .state_db import StateDatabase
+from .state_validator import StateValidator
+from .notification_handler import NotificationHandler
 
 
 LPSECURITY_ATTRIBUTES = ctypes.c_void_p
@@ -163,6 +166,86 @@ class PipeConnection:
 OnTurnStart = Callable[[dict[str, Any], PipeConnection], None]
 
 
+class StateProcessor:
+    """Processes incoming state messages with validation, persistence, and notifications."""
+    
+    def __init__(
+        self,
+        state_db: Optional[StateDatabase] = None,
+        notification_handler: Optional[NotificationHandler] = None
+    ):
+        """Initialize state processor.
+        
+        Args:
+            state_db: Optional database for persistence
+            notification_handler: Optional notification handler
+        """
+        self.state_db = state_db
+        self.notification_handler = notification_handler
+        self.validator = StateValidator()
+        self._last_state: Optional[dict[str, Any]] = None
+        self._log = get_logger()
+    
+    def process_state(
+        self,
+        state: dict[str, Any],
+        on_turn_start: OnTurnStart,
+        pipe_conn: PipeConnection
+    ) -> None:
+        """Process an incoming state message.
+        
+        Args:
+            state: State dictionary from DLL
+            on_turn_start: Callback to handle turn start
+            pipe_conn: Pipe connection for this turn
+        """
+        # Validate state
+        is_valid, error_msg = self.validator.validate_state(state)
+        
+        if not is_valid:
+            self._log.error(f"State validation failed: {error_msg}")
+            if self.notification_handler:
+                self.notification_handler.notify_validation_error(error_msg, state)
+            if self.state_db:
+                self.state_db.save_state(state, validated=False, validation_errors=error_msg)
+            return
+        
+        # Check consistency with previous state
+        if self._last_state:
+            is_consistent, warning = self.validator.check_state_consistency(self._last_state, state)
+            if not is_consistent:
+                self._log.warning(f"State consistency issue: {warning}")
+                if self.notification_handler:
+                    self.notification_handler.notify_consistency_warning(
+                        warning or "Unknown consistency issue",
+                        self._last_state.get("turn"),
+                        state.get("turn")
+                    )
+        
+        # Save to database
+        if self.state_db:
+            self.state_db.save_state(state, validated=True)
+        
+        # Send notifications
+        msg_type = state.get("type", "unknown")
+        turn = state.get("turn")
+        
+        if self.notification_handler:
+            self.notification_handler.notify_state_received(msg_type, turn)
+            
+            if msg_type == "turn_start":
+                player_id = state.get("player_id")
+                if player_id is not None and turn is not None:
+                    self.notification_handler.notify_turn_start(turn, player_id, state)
+        
+        # Update last state
+        self._last_state = state
+        
+        # Call the turn start handler
+        if msg_type == "turn_start":
+            on_turn_start(state, pipe_conn)
+
+
 class NamedPipeServer:
     """Single-client named-pipe server for turn-based communication.
 
@@ -173,7 +256,13 @@ class NamedPipeServer:
     4. Pipe reading continues immediately, allowing new messages to be processed
     """
 
-    def __init__(self, pipe_name: str, on_turn_start: OnTurnStart):
+    def __init__(
+        self,
+        pipe_name: str,
+        on_turn_start: OnTurnStart,
+        state_db: Optional[StateDatabase] = None,
+        notification_handler: Optional[NotificationHandler] = None
+    ):
         if not pipe_name.startswith("\\\\.\\pipe\\"):
             raise ValueError("pipe_name must start with \\\\.\\pipe\\")
         self.pipe_name = pipe_name
@@ -183,6 +272,9 @@ class NamedPipeServer:
         self._handle: Optional[int] = None
         self._current_handler_thread: Optional[threading.Thread] = None
         self._handler_lock = threading.Lock()
+        
+        # State processing
+        self.state_processor = StateProcessor(state_db, notification_handler)
 
     def start(self) -> None:
         if self._running:
@@ -285,6 +377,8 @@ class NamedPipeServer:
             state = json.loads(decoded)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             self._log.error(f"Failed to parse message: {e}, raw data: {data[:100]!r}")
+            if self.state_processor.notification_handler:
+                self.state_processor.notification_handler.notify_pipe_error(f"Parse error: {e}")
             return
 
         # Log parsed message details
@@ -301,9 +395,16 @@ class NamedPipeServer:
         # This allows new messages to be processed even if handler is blocking
         def run_handler():
             try:
-                self.on_turn_start(state, pipe_conn)
+                # Process state (validation, persistence, notifications)
+                self.state_processor.process_state(state, self.on_turn_start, pipe_conn)
             except Exception as e:
                 self._log.error(f"Handler error: {e}", exc_info=True)
+                if self.state_processor.notification_handler:
+                    self.state_processor.notification_handler.notify(
+                        "error",
+                        f"Error processing state: {e}",
+                        {"error": str(e), "state_type": state.get("type")}
+                    )
             finally:
                 # Clear handler thread reference when done
                 with self._handler_lock:

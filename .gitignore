@@ -7,3 +7,14 @@
 *.exe
 *.dll
 python/logs/*.log
+*.db
+orchestrator_state.db
+__pycache__
+.venv
+.pytest_cache
+.vscode
+.idea
+.DS_Store
+.env
+.env.*
+*.log

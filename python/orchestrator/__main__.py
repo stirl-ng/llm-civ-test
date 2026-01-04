@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 from .formatting import format_game_state
 from .mcp_http_server import MCPHTTPServer
 from .pipe_server import NamedPipeServer
+from .state_db import StateDatabase
+from .notification_handler import NotificationHandler
 
 if TYPE_CHECKING:
     from .pipe_server import PipeConnection
@@ -73,12 +75,28 @@ def run_mcp_mode(
     4. LLM calls end_turn when done
     5. DLL advances to next turn
     """
-    # Start MCP HTTP server
-    mcp_server = MCPHTTPServer(mcp_host, mcp_port, turn_timeout=turn_timeout)
+    # Initialize state database and notification handler
+    state_db = StateDatabase()
+    notification_handler = NotificationHandler()
+    
+    # Register callback to save notifications to database
+    def save_notification(notif_type: str, message: str, data: dict[str, Any] | None) -> None:
+        state_db.add_notification(notif_type, message, data)
+    notification_handler.register_callback(save_notification)
+    
+    # Start MCP HTTP server with state tracking
+    mcp_server = MCPHTTPServer(
+        mcp_host,
+        mcp_port,
+        turn_timeout=turn_timeout,
+        state_db=state_db,
+        notification_handler=notification_handler
+    )
     mcp_server.start()
 
     print(f"[orchestrator] MCP server: http://{mcp_host}:{mcp_port}/tool", file=sys.stderr)
     print(f"[orchestrator] Turn timeout: {turn_timeout}s", file=sys.stderr)
+    print(f"[orchestrator] State database: {state_db.db_path}", file=sys.stderr)
 
     # Start dashboard if requested
     if dashboard_host is not None:
@@ -116,8 +134,13 @@ def run_mcp_mode(
         else:
             print(f"[orchestrator] Turn {turn_num}: completed", file=sys.stderr)
 
-    # Create pipe server and run in background thread
-    pipe_server = NamedPipeServer(pipe_path, on_turn_start)
+    # Create pipe server with state tracking and run in background thread
+    pipe_server = NamedPipeServer(
+        pipe_path,
+        on_turn_start,
+        state_db=state_db,
+        notification_handler=notification_handler
+    )
 
     pipe_thread = Thread(target=pipe_server.start, daemon=True)
     pipe_thread.start()

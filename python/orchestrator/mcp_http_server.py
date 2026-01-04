@@ -17,6 +17,11 @@ from threading import Thread
 from typing import Optional
 
 from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .state_db import StateDatabase
+    from .notification_handler import NotificationHandler
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +56,45 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(state)
         elif self.path == "/tools":
             self._send_json({"tools": AVAILABLE_TOOLS})
+        elif self.path == "/stats":
+            stats = self.mcp_server.get_action_stats()
+            self._send_json({"stats": stats})
         else:
             self._send_error(404, "Not found")
 
     def do_POST(self):
         """Handle POST requests for tool calls."""
-        content_length = int(self.headers.get("Content-Length", 0))
+        content_length_str = self.headers.get("Content-Length")
+        if not content_length_str:
+            self._send_error(400, "Missing Content-Length header")
+            return
+        
+        try:
+            content_length = int(content_length_str)
+        except ValueError:
+            self._send_error(400, f"Invalid Content-Length: {content_length_str}")
+            return
+        
+        if content_length < 0:
+            self._send_error(400, f"Content-Length must be non-negative, got {content_length}")
+            return
+        
+        # Limit max body size to prevent DoS (10MB)
+        MAX_BODY_SIZE = 10 * 1024 * 1024
+        if content_length > MAX_BODY_SIZE:
+            self._send_error(413, f"Request body too large: {content_length} bytes (max {MAX_BODY_SIZE})")
+            return
+        
         body = self.rfile.read(content_length)
+        
+        if len(body) != content_length:
+            self._send_error(400, f"Incomplete request body: expected {content_length} bytes, got {len(body)}")
+            return
 
         try:
             request = json.loads(body)
-        except json.JSONDecodeError:
-            self._send_error(400, "Invalid JSON")
+        except json.JSONDecodeError as e:
+            self._send_error(400, f"Invalid JSON: {e}")
             return
 
         if self.path == "/tool":
@@ -106,10 +138,21 @@ class MCPHTTPServer:
     HTTP handlers use mcp_server to execute tool calls.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 8765, turn_timeout: float = 300.0):
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 8765,
+        turn_timeout: float = 300.0,
+        state_db: Optional["StateDatabase"] = None,
+        notification_handler: Optional["NotificationHandler"] = None
+    ):
         self.host = host
         self.port = port
-        self.mcp_server = CivMCPServer(turn_timeout=turn_timeout)
+        self.mcp_server = CivMCPServer(
+            turn_timeout=turn_timeout,
+            state_db=state_db,
+            notification_handler=notification_handler
+        )
         self.http_server: Optional[HTTPServer] = None
         self.thread: Optional[Thread] = None
 
@@ -122,7 +165,7 @@ class MCPHTTPServer:
         self.thread.start()
 
         logger.info(f"MCP HTTP Server started on http://{self.host}:{self.port}")
-        logger.info(f"Endpoints: /health, /state, /tools, /tool")
+        logger.info(f"Endpoints: GET /health, GET /state, GET /tools, GET /stats, POST /tool")
 
     def stop(self):
         """Stop the HTTP server."""
