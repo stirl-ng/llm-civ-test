@@ -1,39 +1,59 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `dll/`: C++ Civ V DLL mod sources and Visual Studio solution.
-- `python/`: Orchestrator, client SDK, and examples.
-- `schemas/`: JSON schemas for state and actions (`state.schema.json`, `actions.schema.json`).
-- `docs/`: Design notes and troubleshooting.
-- `tools/`: Dev scripts (format, lint, packaging).
+- `Community-Patch-DLL/`: Civ V Community Patch DLL (submodule) with LLM protocol implementation.
+- `python/`: Orchestrator that bridges DLL and LLMs via HTTP.
+  - `orchestrator/`: Main package - pipe server, MCP server, dashboard.
+  - `examples/`: Example client scripts.
+- `docs/`: Documentation.
+  - `protocol.md`: DLL ↔ Orchestrator message protocol.
+  - `orchestrator.md`: Orchestrator CLI and architecture.
+  - `getting-started.md`: Quick start guide for MCP server.
+  - `state-schema.md`: Game state schema reference.
 - Root: `README.md`, `AGENTS.md`.
 
-Note: This repo currently ships documentation; new code should follow the layout above.
-
 ## Build, Test, and Development Commands
-- DLL build: Open `dll/CvGameCoreExpansion2.sln` in Visual Studio (toolset v120). Select Release | Win32, then Build.
-- Python env: `py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r python/requirements.txt`.
-- Run orchestrator: From `python/`, `python -m orchestrator` (connects to `\\.\pipe\civv_llm`).
+- DLL build: See `Community-Patch-DLL/DEVELOPMENT.md`.
+- Python env: `py -3.11 -m venv .venv && .\.venv\Scripts\Activate.ps1 && pip install -r python/requirements.txt`.
+- Run orchestrator: From `python/`, `python -m orchestrator` (creates pipe `\\.\pipe\civv_llm`, starts MCP server on port 8765).
+- Run with dashboard: `python -m orchestrator --dashboard` (adds web UI on port 5000).
+- Debug mode: `python -m orchestrator --debug` (displays DLL messages without LLM processing).
 - Tests (Python): `pytest -q` in `python/`.
-- Format (Python): `black .` (or `ruff format` if configured).
-- Lint (C++): `clang-tidy` via `tools/run-clang-tidy.ps1` when available.
+- Format (Python): `black .` or `ruff format`.
 
 ## Coding Style & Naming Conventions
 - C++: C++14, 4-space indent, PascalCase types, camelCase methods/vars, UPPER_CASE constants. Prefer RAII; avoid raw new/delete.
 - Python: PEP 8, 4-space indent, snake_case, type hints; docstrings for public APIs.
-- JSON: snake_case keys (e.g., `turn`, `city_orders`, `unit`), minimal payloads, stable ordering for diffs.
+- JSON: snake_case keys (e.g., `turn`, `city_id`, `unit_id`), minimal payloads.
+
+## Architecture Overview
+
+```
+┌──────────────┐         ┌──────────────┐         ┌─────────────┐
+│  Civ V DLL   │ ◄─────► │ Orchestrator │ ◄─────► │     LLM     │
+│   (Game)     │  Pipe   │  (Python)    │  HTTP   │             │
+└──────────────┘         └──────────────┘         └─────────────┘
+```
+
+**Sequential turn flow:**
+1. DLL sends `turn_start` with game state via named pipe
+2. Orchestrator caches state and exposes via MCP HTTP server
+3. LLM queries state and sends actions one at a time
+4. Each action is forwarded to DLL immediately, response returned to LLM
+5. LLM calls `end_turn` when done
+6. Orchestrator signals DLL to advance turn
+
+See `docs/protocol.md` for message formats.
 
 ## Testing Guidelines
-- Python: `pytest` with 80%+ coverage. Unit tests in `python/tests/`; integration tests in `python/tests/integration/`.
-- Schemas: Validate all I/O against `schemas/*.json`; reject unknown fields.
-- In-game: For DLL changes, provide a short hotseat run log (≥100 turns) and note crashes or desyncs. Attach Python logs from `python/logs/`.
+- Python: `pytest` with good coverage. Unit tests in `python/tests/`.
+- In-game: For DLL changes, test with orchestrator in debug mode to verify message formats.
 
 ## Commit & Pull Request Guidelines
-- Commits: Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`). Current history is informal—adopt this convention going forward.
-- PRs: Include purpose, linked issues, repro/validation steps, and before/after notes. Add logs/screenshots for gameplay-impacting changes. Keep PRs focused and small.
+- Commits: Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`).
+- PRs: Include purpose, validation steps, and before/after notes. Keep PRs focused.
 
 ## Security & Configuration Tips
-- Pipe name: Default `\\.\pipe\civv_llm`; override with `CIVV_PIPE` env var.
-- Validation: Never bypass the game’s legality checks; sanitize inbound JSON.
-- Concurrency: Keep IO on a background thread; avoid blocking the main game loop.
-
+- Pipe name: Default `\\.\pipe\civv_llm`; override with `--pipe` flag or `CIVV_PIPE` env var.
+- Validation: Sanitize inbound JSON; DLL validates action legality.
+- Concurrency: Pipe I/O runs in background thread; main thread handles HTTP.

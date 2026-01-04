@@ -1,180 +1,140 @@
-# LLM-Civ Protocol Specification
+# DLL ↔ Orchestrator Protocol
 
-This document defines the communication protocol between the Civ V DLL, the Orchestrator, and the LLM.
+This document describes all messages exchanged between the Civ V DLL and the Python orchestrator over the named pipe.
 
-## Architecture Overview
-
-```
-┌─────────────────┐         ┌─────────────────────┐         ┌─────────────┐
-│    Civ V DLL    │◄──────►│    Orchestrator     │◄───────►│     LLM     │
-│                 │  Pipe   │                     │  HTTP    │             │
-│  - Game logic   │  JSON   │  - State cache      │  JSON    │  - Queries  │
-│  - Execute cmds │         │  - Turn management  │          │  - Decides  │
-│  - Send state   │         │  - Protocol bridge  │          │  - Actions  │
-└─────────────────┘         └─────────────────────┘         └─────────────┘
-```
-
-### Components
-
-| Component | Role |
-|-----------|------|
-| **DLL** | Runs inside Civ V. Sends game state, executes commands, returns results. |
-| **Orchestrator** | Python process. Bridges DLL↔LLM. Manages turns, caches state, handles timeouts. |
-| **LLM** | External AI (Claude, GPT, etc). Connects via HTTP, makes decisions using MCP tools. |
-
-### Communication Channels
-
-| Channel | Transport | Format |
-|---------|-----------|--------|
-| DLL ↔ Orchestrator | Windows Named Pipe | Newline-delimited JSON |
-| Orchestrator ↔ LLM | HTTP (localhost) | JSON via REST endpoints |
+**Pipe**: `\\.\pipe\civv_llm` (configurable via `--pipe` flag)
+**Format**: Newline-delimited JSON
+**Encoding**: UTF-8
 
 ---
 
-## Turn Lifecycle
-
-### High-Level Flow
+## Overview
 
 ```
-1. DLL detects it's the LLM player's turn
-2. DLL sends `turn_start` message with full game state
-3. Orchestrator caches state, opens turn for LLM
-4. LLM makes tool calls (queries + actions) via HTTP
-   - Query tools: read from orchestrator's cache (fast)
-   - Action tools: forwarded to DLL, block until result
-5. LLM calls `end_turn` when done
-6. Orchestrator sends `end_turn` to DLL
-7. DLL acknowledges, advances to next player
-```
-
-### Detailed Sequence
-
-```
-     DLL                      Orchestrator                      LLM
-      │                            │                             │
-      │ ───── turn_start ────────► │                             │
-      │       {state}              │                             │
-      │                            │  [turn now active]          │
-      │                            │ ◄──── get_game_state() ──── │
-      │                            │ ─────── {state} ──────────► │
-      │                            │                             │
-      │                            │ ◄──── send_action() ─────── │
-      │ ◄─────── action ────────── │       {move unit}           │
-      │ ─────── action_result ───► │                             │
-      │         {success, delta}   │ ─────── {result} ─────────► │
-      │                            │                             │
-      │                            │ ◄──── send_action() ─────── │
-      │ ◄─────── action ────────── │       {attack}              │
-      │ ─────── action_result ───► │                             │
-      │         {success, delta}   │ ─────── {result} ─────────► │
-      │                            │                             │
-      │                            │ ◄──── end_turn() ────────── │
-      │ ◄─────── end_turn ──────── │                             │
-      │ ─────── turn_end_ack ────► │                             │
-      │                            │ ─────── {ended} ──────────► │
-      │                            │                             │
-      │    [other players turn]    │                             │
-      │                            │                             │
-      │ ───── turn_start ────────► │  [next turn for LLM]        │
+┌─────────┐                              ┌──────────────┐
+│   DLL   │  ───── turn_start ────────►  │ Orchestrator │
+│         │                              │              │
+│         │  ◄───── action ───────────   │   (LLM)      │
+│         │  ───── action_result ─────►  │              │
+│         │                              │              │
+│         │  ◄───── action ───────────   │              │
+│         │  ───── action_result ─────►  │              │
+│         │                              │              │
+│         │  ◄───── end_turn ─────────   │              │
+│         │                              │              │
+│         │  ───── turn_start ────────►  │  (next turn) │
+└─────────┘                              └──────────────┘
 ```
 
 ---
 
-## DLL ↔ Orchestrator Protocol
+## Messages FROM DLL → Orchestrator
 
-Transport: Named pipe (default `\\.\pipe\civv_llm`)
-Format: Newline-delimited UTF-8 JSON, one message per line.
+### 1. `turn_start`
 
-### Messages: DLL → Orchestrator
-
-#### `turn_start`
-Sent when it becomes the LLM player's turn.
+Sent at the beginning of each turn when it's the LLM player's turn.
 
 ```json
 {
   "type": "turn_start",
   "player_id": 0,
-  "turn": 42,
+  "turn": 7,
   "state": {
-    "turn": 42,
-    "era": "Classical",
-    "gold": 150,
-    "science_per_turn": 12,
-    "culture_per_turn": 8,
-    "cities": [...],
-    "units": [...],
-    "technologies": {...},
-    "diplomacy": {...},
-    "resources": {...},
-    "pending_decisions": {...}
+    "turn": 7,
+    "playersAlive": 18,
+    "civsEver": 18,
+    // ... additional game state fields
   }
 }
 ```
 
-#### `action_result`
-Sent in response to an action request.
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"turn_start"` |
+| `player_id` | int | The player ID whose turn it is |
+| `turn` | int | Current turn number |
+| `state` | object | Full game state snapshot (see State Schema below) |
+
+---
+
+### 2. `action_result`
+
+Sent in response to each action received from the orchestrator.
 
 ```json
 {
   "type": "action_result",
-  "request_id": "uuid-1234",
   "success": true,
-  "result": {
-    "message": "Unit moved successfully",
-    "combat": null,
-    "promotion_available": false
+  "action": {
+    "unit_id": 5,
+    "command": "move",
+    "x": 10,
+    "y": 15
   },
-  "state_delta": {
-    "units": [
-      {"id": 5, "x": 10, "y": 12, "moves_remaining": 1}
-    ],
-    "revealed_tiles": [
-      {"x": 11, "y": 12, "terrain": "plains", "has_barbarian": true}
-    ]
+  "result": {
+    "moved": true,
+    "new_x": 10,
+    "new_y": 15,
+    "movement_remaining": 1
+  },
+  "state": {
+    // Optional: updated game state after action
   }
 }
 ```
 
-#### `turn_end_ack`
-Acknowledges the turn has ended.
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"action_result"` |
+| `success` | bool | Whether the action succeeded |
+| `action` | object | Echo of the action that was executed |
+| `result` | object | Action-specific result data |
+| `error` | string | (If `success: false`) Error message |
+| `state` | object | (Optional) Updated game state after action |
+
+#### Error Response
 
 ```json
 {
-  "type": "turn_end_ack",
-  "turn": 42,
-  "next_turn_eta": null
+  "type": "action_result",
+  "success": false,
+  "action": {
+    "unit_id": 5,
+    "command": "move",
+    "x": 10,
+    "y": 15
+  },
+  "error": "Unit cannot move to that tile - occupied by enemy"
 }
 ```
 
-### Messages: Orchestrator → DLL
+---
 
-#### `action`
-Request to execute a game action.
+## Messages FROM Orchestrator → DLL
+
+### 1. `action`
+
+Sent when the LLM wants to perform a game action. The orchestrator expects a response before sending another action.
 
 ```json
 {
   "type": "action",
-  "request_id": "uuid-1234",
   "action": {
-    "kind": "move_unit",
-    "unit_id": 5,
-    "to": [10, 12]
+    // Action-specific fields (see Action Types below)
   }
 }
 ```
 
-#### `get_state`
-Request a full state refresh.
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"action"` |
+| `action` | object | The action to perform |
 
-```json
-{
-  "type": "get_state",
-  "request_id": "uuid-5678"
-}
-```
+---
 
-#### `end_turn`
-Signal that the LLM is done with its turn.
+### 2. `end_turn`
+
+Sent when the LLM is done making decisions for this turn.
 
 ```json
 {
@@ -182,284 +142,287 @@ Signal that the LLM is done with its turn.
 }
 ```
 
----
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"end_turn"` |
 
-## Orchestrator ↔ LLM Protocol
-
-Transport: HTTP server on localhost (default port 8765)
-Format: JSON request/response
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/state` | Get current cached state |
-| GET | `/tools` | List available tools |
-| POST | `/tool` | Execute a tool |
-
-### Tool Call Format
-
-**Request:**
-```json
-POST /tool
-{
-  "tool": "send_action",
-  "arguments": {
-    "action": {"kind": "move_unit", "unit_id": 5, "to": [10, 12]}
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "result": {
-    "success": true,
-    "message": "Unit moved",
-    "state_delta": {...}
-  }
-}
-```
-
----
-
-## LLM Tools
-
-### Query Tools (Cache-Only, Fast)
-
-These read from the orchestrator's cached state. No DLL round-trip.
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `get_game_state` | Full state or filtered by category | `category?`, `format?` |
-| `get_cities` | City information | `city_id?` |
-| `get_units` | Unit information | `unit_id?` |
-| `get_tech_tree` | Technology status | - |
-| `get_diplomacy` | Diplomatic relations | - |
-| `get_resources` | Strategic/luxury resources | - |
-| `get_victory_progress` | Victory condition progress | - |
-| `get_available_choices` | Pending decisions | - |
-| `format_state` | Human-readable state summary | `raw?` |
-
-### Action Tools (DLL Round-Trip, Blocking)
-
-These send commands to the DLL and wait for results. The orchestrator updates its cached state with the returned `state_delta`.
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `send_action` | Execute a single game action | `action`, `notes?` |
-| `get_state_refresh` | Force full state reload from DLL | - |
-
-### Turn Control Tools
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `end_turn` | Signal done, send all to DLL | `notes?` |
+**DLL behavior**: After receiving `end_turn`, the DLL should:
+1. Advance the game to the next turn
+2. When it's the LLM player's turn again, send a new `turn_start`
 
 ---
 
 ## Action Types
 
-Actions sent via `send_action` tool. Each has a `kind` and type-specific parameters.
+Actions are sent inside the `action` field of an `action` message.
 
-### Unit Actions
-
-```json
-{"kind": "move_unit", "unit_id": 5, "to": [10, 12]}
-{"kind": "attack", "unit_id": 5, "target": [11, 12]}
-{"kind": "fortify", "unit_id": 5}
-{"kind": "sleep", "unit_id": 5}
-{"kind": "skip", "unit_id": 5}
-{"kind": "delete_unit", "unit_id": 5}
-{"kind": "upgrade_unit", "unit_id": 5}
-{"kind": "promote_unit", "unit_id": 5, "promotion": "PROMOTION_DRILL_1"}
-```
-
-### City Actions
-
-```json
-{"kind": "set_production", "city_id": 1, "item": "UNIT_WARRIOR"}
-{"kind": "set_production", "city_id": 1, "item": "BUILDING_LIBRARY"}
-{"kind": "buy_item", "city_id": 1, "item": "UNIT_SETTLER"}
-{"kind": "set_focus", "city_id": 1, "focus": "CITY_AI_FOCUS_TYPE_PRODUCTION"}
-{"kind": "sell_building", "city_id": 1, "building": "BUILDING_MONUMENT"}
-```
-
-### Research & Culture
-
-```json
-{"kind": "set_research", "tech": "TECH_POTTERY"}
-{"kind": "adopt_policy", "policy": "POLICY_TRADITION"}
-{"kind": "choose_ideology", "ideology": "IDEOLOGY_FREEDOM"}
-```
-
-### Diplomacy
-
-```json
-{"kind": "declare_war", "target_player": 2}
-{"kind": "make_peace", "target_player": 2}
-{"kind": "propose_trade", "target_player": 2, "offer": {...}, "demand": {...}}
-{"kind": "send_delegate", "city_state": 5}
-```
-
-### Great People
-
-```json
-{"kind": "use_great_person", "unit_id": 15, "action": "construct_improvement"}
-{"kind": "use_great_person", "unit_id": 15, "action": "golden_age"}
-```
-
----
-
-## State Delta Format
-
-When an action is executed, the DLL returns a `state_delta` containing only what changed. The orchestrator merges this into its cached state.
-
-### Delta Structure
+### Unit Movement
 
 ```json
 {
-  "state_delta": {
-    "gold": 145,
-    "units": [
-      {"id": 5, "x": 10, "y": 12, "moves_remaining": 1, "health": 100}
-    ],
-    "units_removed": [8],
-    "cities": [
-      {"id": 1, "production_progress": 25}
-    ],
-    "revealed_tiles": [
-      {"x": 11, "y": 12, "terrain": "plains", "feature": null, "resource": "RESOURCE_HORSES"}
-    ],
-    "notifications": [
-      {"type": "combat", "message": "Your Warrior defeated a Barbarian!"}
-    ]
+  "type": "action",
+  "action": {
+    "command": "move_unit",
+    "unit_id": 5,
+    "x": 10,
+    "y": 15
   }
 }
 ```
 
-### Merge Rules
+### Unit Attack
 
-1. **Scalars** (gold, turn, etc): Replace with new value
-2. **Arrays with IDs** (units, cities): Upsert by ID
-3. **Removed items**: Delete by ID from `*_removed` arrays
-4. **Revealed tiles**: Append to visibility map
-5. **Notifications**: Append (for display to user)
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "attack",
+    "unit_id": 5,
+    "target_x": 11,
+    "target_y": 15
+  }
+}
+```
+
+### Research Technology
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "research",
+    "tech": "TECH_POTTERY"
+  }
+}
+```
+
+### City Production
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "produce",
+    "city_id": 1,
+    "item": "UNIT_WARRIOR"
+  }
+}
+```
+
+### Adopt Policy
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "adopt_policy",
+    "policy": "POLICY_TRADITION_OPENER"
+  }
+}
+```
+
+### Found City
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "found_city",
+    "unit_id": 3
+  }
+}
+```
+
+### Fortify Unit
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "fortify",
+    "unit_id": 5
+  }
+}
+```
+
+### Skip Unit
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "skip",
+    "unit_id": 5
+  }
+}
+```
+
+### Build Improvement
+
+```json
+{
+  "type": "action",
+  "action": {
+    "command": "build",
+    "unit_id": 7,
+    "improvement": "IMPROVEMENT_FARM"
+  }
+}
+```
 
 ---
 
-## Timeouts & Error Handling
+## State Schema
 
-### Timeouts
+The `state` object in `turn_start` contains the game state. Suggested structure:
 
-| Timeout | Default | Description |
-|---------|---------|-------------|
-| Turn timeout | 300s | Max time for LLM to complete turn |
-| Action timeout | 30s | Max time for single DLL action |
-| Pipe connect timeout | 30s | Max time to connect to DLL pipe |
+```json
+{
+  "turn": 7,
+  "playersAlive": 18,
+  "civsEver": 18,
 
-### Error Responses
+  "cities": [
+    {
+      "id": 1,
+      "name": "Rome",
+      "x": 5,
+      "y": 10,
+      "population": 3,
+      "producing": "UNIT_WARRIOR",
+      "turns_remaining": 2,
+      "buildings": ["BUILDING_MONUMENT"],
+      "available_production": ["UNIT_WARRIOR", "UNIT_SETTLER", "BUILDING_GRANARY"]
+    }
+  ],
 
-**DLL errors:**
+  "units": [
+    {
+      "id": 5,
+      "type": "UNIT_WARRIOR",
+      "x": 8,
+      "y": 12,
+      "health": 100,
+      "movement": 2,
+      "can_move": true,
+      "can_attack": true
+    }
+  ],
+
+  "technology": {
+    "researching": "TECH_POTTERY",
+    "turns_remaining": 3,
+    "completed": ["TECH_AGRICULTURE", "TECH_MINING"],
+    "available": ["TECH_POTTERY", "TECH_ANIMAL_HUSBANDRY", "TECH_ARCHERY"]
+  },
+
+  "resources": {
+    "gold": 150,
+    "gold_per_turn": 5,
+    "science_per_turn": 12,
+    "culture_per_turn": 3,
+    "faith_per_turn": 0
+  },
+
+  "diplomacy": {
+    "known_civs": ["CIVILIZATION_GREECE", "CIVILIZATION_EGYPT"],
+    "at_war_with": [],
+    "relationships": {
+      "CIVILIZATION_GREECE": "neutral",
+      "CIVILIZATION_EGYPT": "friendly"
+    }
+  }
+}
+```
+
+---
+
+## Sequence Diagram
+
+```
+DLL                                 Orchestrator                          LLM (via HTTP)
+ │                                       │                                     │
+ │  {"type": "turn_start", ...}          │                                     │
+ │ ─────────────────────────────────────►│                                     │
+ │                                       │   GET /state                        │
+ │                                       │◄────────────────────────────────────│
+ │                                       │   {state}                           │
+ │                                       │────────────────────────────────────►│
+ │                                       │                                     │
+ │                                       │   POST /tool send_action            │
+ │                                       │◄────────────────────────────────────│
+ │  {"type": "action", "action": {...}}  │                                     │
+ │◄──────────────────────────────────────│                                     │
+ │                                       │                                     │
+ │  {"type": "action_result", ...}       │                                     │
+ │──────────────────────────────────────►│                                     │
+ │                                       │   {action_result}                   │
+ │                                       │────────────────────────────────────►│
+ │                                       │                                     │
+ │                                       │   POST /tool send_action            │
+ │                                       │◄────────────────────────────────────│
+ │  {"type": "action", "action": {...}}  │                                     │
+ │◄──────────────────────────────────────│                                     │
+ │  {"type": "action_result", ...}       │                                     │
+ │──────────────────────────────────────►│   {action_result}                   │
+ │                                       │────────────────────────────────────►│
+ │                                       │                                     │
+ │                                       │   POST /tool end_turn               │
+ │                                       │◄────────────────────────────────────│
+ │  {"type": "end_turn"}                 │                                     │
+ │◄──────────────────────────────────────│                                     │
+ │                                       │   {"status": "turn_ended"}          │
+ │                                       │────────────────────────────────────►│
+ │                                       │                                     │
+ │  (game advances, next turn)           │                                     │
+ │                                       │                                     │
+ │  {"type": "turn_start", ...}          │                                     │
+ │──────────────────────────────────────►│                                     │
+ │                                       │                                     │
+```
+
+---
+
+## Error Handling
+
+### Invalid JSON from Orchestrator
+
+If the DLL receives invalid JSON, it should respond with:
+
+```json
+{
+  "type": "error",
+  "error": "Invalid JSON",
+  "detail": "Unexpected token at position 42"
+}
+```
+
+### Unknown Action Command
+
 ```json
 {
   "type": "action_result",
-  "request_id": "uuid-1234",
   "success": false,
-  "error": {
-    "code": "INVALID_UNIT",
-    "message": "Unit 5 does not exist"
-  },
-  "state_delta": null
+  "error": "Unknown command: 'fly_to_moon'"
 }
 ```
 
-**Orchestrator errors (to LLM):**
+### Action Not Possible
+
 ```json
 {
-  "status": "error",
-  "error": "Action timed out waiting for DLL response"
+  "type": "action_result",
+  "success": false,
+  "action": {"command": "move_unit", "unit_id": 5, "x": 10, "y": 15},
+  "error": "Unit 5 has no movement points remaining"
 }
 ```
 
-### Graceful Degradation
-
-- If DLL disconnects mid-turn: Orchestrator ends turn with whatever actions completed
-- If LLM times out: Turn ends with no actions (or partial actions if any queued)
-- If action fails: LLM receives error, can retry or skip
-
 ---
 
-## Example: Complete Turn
+## Implementation Notes
 
-### 1. Turn Starts
-
-DLL sends:
-```json
-{"type": "turn_start", "player_id": 0, "turn": 1, "state": {"turn": 1, "gold": 100, "cities": [{"id": 1, "name": "Rome", "x": 5, "y": 5}], "units": [{"id": 1, "type": "UNIT_SETTLER", "x": 5, "y": 5}, {"id": 2, "type": "UNIT_WARRIOR", "x": 5, "y": 6}]}}
-```
-
-### 2. LLM Queries State
-
-```
-POST /tool {"tool": "get_units", "arguments": {}}
-→ {"status": "success", "result": {"units": [...], "count": 2}}
-```
-
-### 3. LLM Moves Warrior
-
-```
-POST /tool {"tool": "send_action", "arguments": {"action": {"kind": "move_unit", "unit_id": 2, "to": [6, 6]}}}
-```
-
-Orchestrator → DLL:
-```json
-{"type": "action", "request_id": "a1", "action": {"kind": "move_unit", "unit_id": 2, "to": [6, 6]}}
-```
-
-DLL → Orchestrator:
-```json
-{"type": "action_result", "request_id": "a1", "success": true, "result": {"message": "Warrior moved"}, "state_delta": {"units": [{"id": 2, "x": 6, "y": 6, "moves_remaining": 1}], "revealed_tiles": [{"x": 7, "y": 6, "terrain": "grassland"}]}}
-```
-
-LLM receives:
-```json
-{"status": "success", "result": {"success": true, "message": "Warrior moved", "state_delta": {...}}}
-```
-
-### 4. LLM Founds City
-
-```
-POST /tool {"tool": "send_action", "arguments": {"action": {"kind": "found_city", "unit_id": 1}}}
-```
-
-### 5. LLM Ends Turn
-
-```
-POST /tool {"tool": "end_turn", "arguments": {"notes": "Founded capital, moved warrior to scout"}}
-```
-
-Orchestrator → DLL:
-```json
-{"type": "end_turn"}
-```
-
-DLL → Orchestrator:
-```json
-{"type": "turn_end_ack", "turn": 1}
-```
-
----
-
-## Future: Flask Web UI
-
-A Flask server will provide visibility into the game:
-
-- Real-time game state display
-- LLM decision log
-- Action history
-- Manual override controls
-
-This is separate from the MCP HTTP server and will be documented separately.
+1. **Synchronous**: Each action sent by the orchestrator blocks until a response is received
+2. **One at a time**: The orchestrator will not send another action until it receives `action_result`
+3. **State updates**: The DLL can optionally include updated `state` in `action_result` to keep the LLM informed of changes
+4. **Turn advancement**: After `end_turn`, the DLL should process all other players' turns before sending the next `turn_start`
