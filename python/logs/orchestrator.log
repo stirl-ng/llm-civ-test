@@ -1,0 +1,210 @@
+[2026-01-03 14:34:30,110][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:34:37,832][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:35:12,991][INFO] Client connected
+[2026-01-03 14:35:24,272][INFO] Client disconnected or read error: 109
+[2026-01-03 14:35:24,272][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:35:24,281][INFO] Client connected
+[2026-01-03 14:35:31,156][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:36:38,052][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:36:38,053][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:36:41,276][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:36:41,276][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:36:46,795][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:36:46,796][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:36:48,401][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:36:48,401][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:36:50,819][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:36:50,820][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:37:52,430][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:37:52,431][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:37:54,513][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:37:54,513][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:37:55,064][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:37:56,951][INFO] "GET /tools HTTP/1.1" 200 -
+[2026-01-03 14:37:58,397][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:37:59,698][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:37:59,699][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:38:00,703][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:38:00,704][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:38:01,808][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:38:02,503][INFO] "GET /tools HTTP/1.1" 200 -
+[2026-01-03 14:38:17,876][INFO] code 501, message Unsupported method ('OPTIONS')
+[2026-01-03 14:38:17,877][INFO] "OPTIONS /tool HTTP/1.1" 501 -
+[2026-01-03 14:40:31,267][INFO] MCP HTTP Server stopped
+[2026-01-03 14:45:15,719][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:45:19,797][ERROR] ConnectNamedPipe failed: 995
+[2026-01-03 14:45:20,244][INFO] MCP HTTP Server stopped
+[2026-01-03 14:45:37,194][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:46:03,988][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:06,028][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:12,154][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:13,498][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:14,083][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:14,885][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:46:25,858][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:46:25,861][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:46:27,507][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:46:31,187][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:46:31,189][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:46:40,975][INFO] Client connected
+[2026-01-03 14:46:50,180][INFO] Client disconnected or read error: 109
+[2026-01-03 14:46:50,181][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:46:50,191][INFO] Client connected
+[2026-01-03 14:46:55,408][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:47:14,993][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:14,995][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 14:47:14,995][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:14,996][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:47:25,515][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:25,517][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 14:47:25,517][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:25,518][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:47:27,914][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 14:47:27,915][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:30,314][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:31,128][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:31,130][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:31,715][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:35,566][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:36,770][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:36,772][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:37,504][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:38,746][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:39,446][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:40,238][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:40,781][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:41,888][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:41,890][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:42,543][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:47:45,863][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:48:31,475][INFO] Client disconnected or read error: 995
+[2026-01-03 14:48:31,909][INFO] MCP HTTP Server stopped
+[2026-01-03 14:48:33,630][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 14:48:33,634][INFO] Client connected
+[2026-01-03 14:48:36,350][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 14:48:43,374][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:50:36,057][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:50:36,059][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:53:43,389][WARNING] Turn timed out after 300.0s
+[2026-01-03 14:55:29,046][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 14:59:59,324][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 14:59:59,326][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 14:59:59,326][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 14:59:59,326][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 15:00:04,427][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:04,429][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:00:04,429][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:08,295][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:41,745][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:41,747][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:42,967][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:44,148][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:44,700][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:45,098][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:45,834][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:46,262][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:46,928][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:46,929][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:00:49,461][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 15:00:49,994][INFO] "GET /tools HTTP/1.1" 200 -
+[2026-01-03 15:02:25,322][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:25,324][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:28,373][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:40,418][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 15:02:43,775][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:43,777][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:02:43,777][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:50,993][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:02:50,998][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:06:38,636][INFO] Client disconnected or read error: 995
+[2026-01-03 15:06:38,667][INFO] MCP HTTP Server stopped
+[2026-01-03 15:06:40,027][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 15:06:40,057][INFO] Client connected
+[2026-01-03 15:06:46,077][INFO] {'type': 'turn_start', 'player_id': 0, 'turn': 7, 'state': {'turn': 7, 'playersAlive': 18, 'civsEver': 18}}
+[2026-01-03 15:06:46,077][INFO] Turn ? started - waiting for LLM decisions
+[2026-01-03 15:07:33,058][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 15:07:33,105][INFO] Client connected
+[2026-01-03 15:07:38,357][INFO] Turn 8 started - waiting for LLM decisions
+[2026-01-03 15:07:42,576][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:07:42,578][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:07:42,578][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:09:32,439][INFO] Client disconnected or read error: 109
+[2026-01-03 15:09:32,439][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 15:09:42,006][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 15:09:45,156][ERROR] ConnectNamedPipe failed: 995
+[2026-01-03 15:09:45,591][INFO] MCP HTTP Server stopped
+[2026-01-03 15:09:46,752][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 15:09:52,326][INFO] Client connected
+[2026-01-03 15:10:02,204][INFO] Client disconnected or read error: 109
+[2026-01-03 15:10:02,204][INFO] Waiting for client on \\.\pipe\civv_llm...
+[2026-01-03 15:10:02,214][INFO] Client connected
+[2026-01-03 15:10:07,641][INFO] Turn 0 started - waiting for LLM decisions
+[2026-01-03 15:10:50,886][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:10:50,887][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:10:50,887][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:10:50,888][INFO] Turn 1 started - waiting for LLM decisions
+[2026-01-03 15:15:50,898][WARNING] Turn timed out after 300.0s
+[2026-01-03 15:15:50,898][INFO] Turn 2 started - waiting for LLM decisions
+[2026-01-03 15:18:36,169][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 15:18:37,882][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:37,884][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:45,759][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:45,760][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:18:45,760][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:45,761][INFO] Turn 3 started - waiting for LLM decisions
+[2026-01-03 15:18:47,162][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:18:47,162][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:47,163][INFO] Turn 4 started - waiting for LLM decisions
+[2026-01-03 15:18:47,744][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:48,233][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:18:49,084][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:41,467][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:41,472][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:43,399][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:44,398][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:19:44,398][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:47,643][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:47,645][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:47,825][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:19:48,044][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:20,017][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:20,018][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:48,032][INFO] Turn 5 started - waiting for LLM decisions
+[2026-01-03 15:20:53,577][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:53,579][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:20:53,579][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:54,428][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:54,990][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:55,179][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:55,371][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:55,542][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:55,718][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:56,547][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:57,566][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:58,171][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:58,977][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:58,979][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:59,352][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:20:59,805][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:00,200][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:00,811][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:01,847][INFO] "GET /health HTTP/1.1" 200 -
+[2026-01-03 15:21:02,241][INFO] "GET /tools HTTP/1.1" 200 -
+[2026-01-03 15:21:03,123][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:03,932][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:04,312][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:04,314][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:04,761][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:07,252][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:07,931][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:08,665][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:09,130][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:09,923][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:09,925][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:10,594][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:13,576][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:17,346][INFO] Turn 6 started - waiting for LLM decisions
+[2026-01-03 15:21:44,953][INFO] "OPTIONS /tool HTTP/1.1" 200 -
+[2026-01-03 15:21:44,970][INFO] Turn ended by LLM with 0 queued actions
+[2026-01-03 15:21:44,970][INFO] "POST /tool HTTP/1.1" 200 -
+[2026-01-03 15:22:24,965][INFO] Client disconnected or read error: 995

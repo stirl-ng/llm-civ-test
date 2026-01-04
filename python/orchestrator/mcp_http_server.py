@@ -2,7 +2,12 @@
 HTTP-based MCP Server for Civilization V
 
 Provides an HTTP interface for LLMs to control the game via tool calls.
-Runs in a background thread alongside the main orchestrator loop.
+Runs alongside the orchestrator in a background thread.
+
+Sequential action flow:
+- LLM calls send_action via POST /tool
+- Action is sent immediately to DLL, response returned to LLM
+- LLM can react to results before sending next action
 """
 
 import json
@@ -12,9 +17,11 @@ from threading import Thread
 from typing import Optional, TYPE_CHECKING
 
 from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .turn_manager import TurnManager
+    from .state_db import StateDatabase
+    from .notification_handler import NotificationHandler
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +33,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args):
         """Override to use our logger."""
-        logger.debug(format % args)
+        logger.info(format % args)
 
     def do_OPTIONS(self):
-        """Handle CORS preflight."""
+        """Handle CORS preflight requests."""
         self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
+    def _send_cors_headers(self):
+        """Add CORS headers to response."""
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
 
     def do_GET(self):
         """Handle GET requests."""
@@ -53,27 +64,45 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/tools":
             self._send_json({"tools": AVAILABLE_TOOLS})
-
-        elif self.path == "/turn":
-            tm = self.mcp_server.turn_manager
-            self._send_json({
-                "turn_active": tm.turn_active,
-                "turn": tm.turn_number,
-                "player_id": tm._player_id
-            })
-
+        elif self.path == "/stats":
+            stats = self.mcp_server.get_action_stats()
+            self._send_json({"stats": stats})
         else:
             self._send_error(404, "Not found")
 
     def do_POST(self):
         """Handle POST requests for tool calls."""
-        content_length = int(self.headers.get("Content-Length", 0))
+        content_length_str = self.headers.get("Content-Length")
+        if not content_length_str:
+            self._send_error(400, "Missing Content-Length header")
+            return
+        
+        try:
+            content_length = int(content_length_str)
+        except ValueError:
+            self._send_error(400, f"Invalid Content-Length: {content_length_str}")
+            return
+        
+        if content_length < 0:
+            self._send_error(400, f"Content-Length must be non-negative, got {content_length}")
+            return
+        
+        # Limit max body size to prevent DoS (10MB)
+        MAX_BODY_SIZE = 10 * 1024 * 1024
+        if content_length > MAX_BODY_SIZE:
+            self._send_error(413, f"Request body too large: {content_length} bytes (max {MAX_BODY_SIZE})")
+            return
+        
         body = self.rfile.read(content_length)
+        
+        if len(body) != content_length:
+            self._send_error(400, f"Incomplete request body: expected {content_length} bytes, got {len(body)}")
+            return
 
         try:
             request = json.loads(body)
-        except json.JSONDecodeError:
-            self._send_error(400, "Invalid JSON")
+        except json.JSONDecodeError as e:
+            self._send_error(400, f"Invalid JSON: {e}")
             return
 
         if self.path == "/tool":
@@ -101,7 +130,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         """Send JSON response."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2).encode())
 
@@ -111,20 +140,27 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
 
 class MCPHTTPServer:
-    """HTTP server wrapper for MCP server."""
+    """HTTP server wrapper for MCP server.
 
-    def __init__(self, turn_manager: "TurnManager", host: str = "localhost", port: int = 8765):
-        """Initialize HTTP server.
+    The orchestrator accesses mcp_server directly to manage turns.
+    HTTP handlers use mcp_server to execute tool calls.
+    """
 
-        Args:
-            turn_manager: TurnManager for DLL communication
-            host: Host to bind to
-            port: Port to listen on
-        """
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 8765,
+        turn_timeout: float = 300.0,
+        state_db: Optional["StateDatabase"] = None,
+        notification_handler: Optional["NotificationHandler"] = None
+    ):
         self.host = host
         self.port = port
-        self.turn_manager = turn_manager
-        self.mcp_server = CivMCPServer(turn_manager)
+        self.mcp_server = CivMCPServer(
+            turn_timeout=turn_timeout,
+            state_db=state_db,
+            notification_handler=notification_handler
+        )
         self.http_server: Optional[HTTPServer] = None
         self.thread: Optional[Thread] = None
 
@@ -137,9 +173,41 @@ class MCPHTTPServer:
         self.thread.start()
 
         logger.info(f"MCP HTTP Server started on http://{self.host}:{self.port}")
+        logger.info(f"Endpoints: GET /health, GET /state, GET /tools, GET /stats, POST /tool")
 
     def stop(self):
         """Stop the HTTP server."""
         if self.http_server:
             self.http_server.shutdown()
             logger.info("MCP HTTP Server stopped")
+
+
+def run_http_server(host: str = "localhost", port: int = 8765):
+    """Run the MCP HTTP server standalone (for testing)."""
+    server = MCPHTTPServer(host, port)
+    server.start()
+
+    print(f"MCP HTTP Server running on http://{host}:{port}")
+    print("Press Ctrl+C to stop...")
+
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        server.stop()
+
+
+if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+
+    host = sys.argv[1] if len(sys.argv) > 1 else "localhost"
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
+
+    run_http_server(host, port)

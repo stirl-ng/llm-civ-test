@@ -7,43 +7,62 @@ from typing import Any
 
 
 def format_game_state(data: dict[str, Any]) -> str:
-    """Format game state data for human-readable display."""
+    """Format game state data for human-readable display.
+
+    Handles both:
+    - Full message: {'type': 'turn_start', 'turn': 7, 'state': {...}}
+    - Just state: {'turn': 7, 'playersAlive': 18, ...}
+    """
     lines = []
 
-    kind = data.get("kind", "unknown")
-    category = data.get("category", "")
+    # Check if this is a full message or just state
+    msg_type = data.get("type", "")
 
-    if kind == "state" and category == "game_level":
-        game_data = data.get("data", {})
-        lines.append("=" * 60)
-        lines.append("GAME LEVEL STATE")
-        lines.append("=" * 60)
-        lines.append(f"  Turn:        {game_data.get('turn', '?')}")
-        lines.append(f"  Game Speed:  {game_data.get('game_speed', '?')}")
-        lines.append(f"  Difficulty:  {game_data.get('difficulty', '?')}")
-        lines.append(f"  Era:         {game_data.get('era', '?')}")
-        lines.append(f"  Map Size:    {game_data.get('map_size', '?')}")
-        lines.append(f"  Map Type:    {game_data.get('map_type', '?')}")
-        lines.append(f"  Sea Level:   {game_data.get('sea_level', '?')}")
-        lines.append(f"  Players:     {game_data.get('players_alive', '?')} alive / {game_data.get('civs_ever', '?')} ever")
-
-        victory_conds = game_data.get("victory_conditions", [])
-        if victory_conds:
-            lines.append(f"  Victory:     {', '.join(victory_conds)}")
-
-        victory_progress = game_data.get("victory_progress", {})
-        if victory_progress:
-            lines.append("")
-            lines.append("  Victory Progress:")
-            for vtype, vprog in victory_progress.items():
-                if isinstance(vprog, dict):
-                    prog_str = ", ".join(f"{k}={v}" for k, v in vprog.items())
-                    lines.append(f"    {vtype}: {prog_str}")
+    if msg_type == "turn_start":
+        # Full turn_start message
+        turn = data.get("turn", "?")
+        player_id = data.get("player_id", "?")
+        state = data.get("state", {})
 
         lines.append("=" * 60)
+        lines.append(f"TURN {turn} - Player {player_id}")
+        lines.append("=" * 60)
+
+        # Format state contents
+        lines.append(f"  Players Alive: {state.get('playersAlive', '?')}")
+        lines.append(f"  Civs Ever:     {state.get('civsEver', '?')}")
+
+        # Add any other state fields
+        for key, value in state.items():
+            if key not in ('turn', 'playersAlive', 'civsEver'):
+                if isinstance(value, (dict, list)):
+                    lines.append(f"  {key}: {json.dumps(value, indent=4)}")
+                else:
+                    lines.append(f"  {key}: {value}")
+
+        lines.append("=" * 60)
+
+    elif "turn" in data and "playersAlive" in data:
+        # Just the inner state object
+        lines.append("=" * 60)
+        lines.append("GAME STATE")
+        lines.append("=" * 60)
+        lines.append(f"  Turn:          {data.get('turn', '?')}")
+        lines.append(f"  Players Alive: {data.get('playersAlive', '?')}")
+        lines.append(f"  Civs Ever:     {data.get('civsEver', '?')}")
+
+        for key, value in data.items():
+            if key not in ('turn', 'playersAlive', 'civsEver'):
+                if isinstance(value, (dict, list)):
+                    lines.append(f"  {key}: {json.dumps(value, indent=4)}")
+                else:
+                    lines.append(f"  {key}: {value}")
+
+        lines.append("=" * 60)
+
     else:
         # Unknown format, just pretty-print
-        lines.append(f"Received {kind} message:")
+        lines.append(f"Message (type={msg_type or 'unknown'}):")
         lines.append(json.dumps(data, indent=2))
 
     return "\n".join(lines)
