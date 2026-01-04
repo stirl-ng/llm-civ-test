@@ -32,12 +32,27 @@ class DashboardLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
+            # Try to extract player_id from the message
+            player_id = None
+            raw_msg = record.getMessage()
+            
+            # Try to extract player_id from the message
+            # Messages from DLL often contain JSON with player_id field
+            # Use regex to find "player_id": <number> pattern (works for both single-line and multi-line JSON)
+            try:
+                match = re.search(r'"player_id"\s*:\s*(\d+)', raw_msg)
+                if match:
+                    player_id = int(match.group(1))
+            except (ValueError, AttributeError):
+                pass
+            
             log_entry = {
                 "timestamp": datetime.fromtimestamp(record.created).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
                 "message": self.format(record),
-                "raw_message": record.getMessage(),
+                "raw_message": raw_msg,
+                "player_id": player_id,
             }
             with _log_lock:
                 _log_buffer.append(log_entry)
@@ -59,6 +74,7 @@ def setup_dashboard_logging():
 def get_logs(
     level_filter: Optional[str] = None,
     text_filter: Optional[str] = None,
+    player_id_filter: Optional[int] = None,
     limit: int = 100,
 ) -> list[dict]:
     """Get logs from buffer with optional filtering."""
@@ -72,6 +88,9 @@ def get_logs(
     if text_filter:
         pattern = re.compile(re.escape(text_filter), re.IGNORECASE)
         logs = [log for log in logs if pattern.search(log["message"])]
+
+    if player_id_filter is not None:
+        logs = [log for log in logs if log.get("player_id") == player_id_filter]
 
     # Return most recent first, limited
     return list(reversed(logs))[:limit]
@@ -93,20 +112,41 @@ def read_log_file(limit: int = 500) -> list[dict]:
             # Parse log format: [timestamp][level] message
             match = re.match(r"\[([^\]]+)\]\[([^\]]+)\] (.+)", line.strip())
             if match:
+                message = match.group(3)
+                # Try to extract player_id from message
+                player_id = None
+                player_id_match = re.search(r'"player_id"\s*:\s*(\d+)', message)
+                if player_id_match:
+                    try:
+                        player_id = int(player_id_match.group(1))
+                    except ValueError:
+                        pass
+                
                 logs.append({
                     "timestamp": match.group(1),
                     "level": match.group(2),
                     "logger": "file",
-                    "message": match.group(3),
-                    "raw_message": match.group(3),
+                    "message": message,
+                    "raw_message": message,
+                    "player_id": player_id,
                 })
             elif line.strip():
+                # Try to extract player_id from unformatted line
+                player_id = None
+                player_id_match = re.search(r'"player_id"\s*:\s*(\d+)', line.strip())
+                if player_id_match:
+                    try:
+                        player_id = int(player_id_match.group(1))
+                    except ValueError:
+                        pass
+                
                 logs.append({
                     "timestamp": "",
                     "level": "INFO",
                     "logger": "file",
                     "message": line.strip(),
                     "raw_message": line.strip(),
+                    "player_id": player_id,
                 })
     except Exception as e:
         logs.append({
@@ -400,6 +440,7 @@ DASHBOARD_HTML = """
                         <option value="ERROR">ERROR</option>
                     </select>
                     <input type="text" id="textFilter" placeholder="Search logs...">
+                    <input type="number" id="playerIdFilter" placeholder="Player ID" min="0" style="width: 120px;">
                     <button onclick="refreshLogs()">Refresh</button>
                     <button onclick="clearLogs()">Clear</button>
                 </div>
@@ -453,11 +494,13 @@ DASHBOARD_HTML = """
         async function refreshLogs() {
             const level = document.getElementById('levelFilter').value;
             const text = document.getElementById('textFilter').value;
+            const playerId = document.getElementById('playerIdFilter').value;
 
             try {
                 const params = new URLSearchParams();
                 if (level !== 'ALL') params.set('level', level);
                 if (text) params.set('text', text);
+                if (playerId) params.set('player_id', playerId);
                 params.set('limit', '200');
 
                 const response = await fetch(`${DASHBOARD_BASE}/api/logs?${params}`);
@@ -609,8 +652,17 @@ def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
     def api_logs():
         level_filter = request.args.get("level")
         text_filter = request.args.get("text")
+        player_id_filter = request.args.get("player_id")
         limit = int(request.args.get("limit", 100))
         source = request.args.get("source", "memory")  # 'memory' or 'file'
+
+        # Parse player_id filter if provided
+        player_id = None
+        if player_id_filter:
+            try:
+                player_id = int(player_id_filter)
+            except ValueError:
+                pass  # Invalid player_id, ignore filter
 
         if source == "file":
             logs = read_log_file(limit)
@@ -620,9 +672,11 @@ def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
             if text_filter:
                 pattern = re.compile(re.escape(text_filter), re.IGNORECASE)
                 logs = [log for log in logs if pattern.search(log["message"])]
+            if player_id is not None:
+                logs = [log for log in logs if log.get("player_id") == player_id]
             logs = list(reversed(logs))[:limit]
         else:
-            logs = get_logs(level_filter, text_filter, limit)
+            logs = get_logs(level_filter, text_filter, player_id, limit)
 
         return jsonify({"logs": logs, "count": len(logs)})
 
