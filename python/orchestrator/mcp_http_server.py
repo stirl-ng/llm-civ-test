@@ -14,13 +14,9 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .state_db import StateDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +145,12 @@ class MCPHTTPServer:
         self,
         host: str = "localhost",
         port: int = 8765,
-        turn_timeout: float = 300.0,
-        state_db: Optional["StateDatabase"] = None
+        turn_timeout: float = 300.0
     ):
         self.host = host
         self.port = port
         self.mcp_server = CivMCPServer(
-            turn_timeout=turn_timeout,
-            state_db=state_db
+            turn_timeout=turn_timeout
         )
         self.http_server: Optional[HTTPServer] = None
         self.thread: Optional[Thread] = None

@@ -465,6 +465,15 @@ DASHBOARD_HTML = """
                     <button class="command-btn" onclick="runCommand('get_available_choices')">Get Available Choices</button>
                     <button class="command-btn" onclick="runCommand('get_victory_progress')">Get Victory Progress</button>
                     <button class="command-btn" onclick="runCommand('get_resources')">Get Resources</button>
+                    <button class="command-btn" onclick="runCommand('get_player_status')">Get Player Status</button>
+                    <button class="command-btn" onclick="runCommand('get_demographics')">Get Demographics</button>
+                    <button class="command-btn" onclick="runCommand('get_economic_overview')">Get Economic Overview</button>
+                    <button class="command-btn" onclick="runCommand('get_notifications')">Get Notifications</button>
+                    <button class="command-btn" onclick="runCommand('get_religion_overview')">Get Religion Overview</button>
+                    <button class="command-btn" onclick="runCommand('get_tech_tree')">Get Tech Tree</button>
+                    <button class="command-btn" onclick="runCommand('get_trade_route_overview')">Get Trade Route Overview</button>
+                    <button class="command-btn" onclick="runCommand('get_victory_progress')">Get Victory Progress</button>
+                    <button class="command-btn" onclick="runCommand('get_world_congress')">Get World Congress</button>
                     <button class="command-btn" onclick="runCommand('format_state')">Format State (Human Readable)</button>
                 </div>
 

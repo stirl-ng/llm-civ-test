@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 from .formatting import format_game_state
 from .mcp_http_server import MCPHTTPServer
 from .pipe_server import NamedPipeServer
-from .state_db import StateDatabase
 
 if TYPE_CHECKING:
     from .pipe_server import PipeConnection
@@ -74,21 +73,16 @@ def run_mcp_mode(
     4. LLM calls end_turn when done
     5. DLL advances to next turn
     """
-    # Initialize state database
-    state_db = StateDatabase()
-    
-    # Start MCP HTTP server with state tracking
+    # Start MCP HTTP server
     mcp_server = MCPHTTPServer(
         mcp_host,
         mcp_port,
-        turn_timeout=turn_timeout,
-        state_db=state_db
+        turn_timeout=turn_timeout
     )
     mcp_server.start()
 
     print(f"[orchestrator] MCP server: http://{mcp_host}:{mcp_port}/tool", file=sys.stderr)
     print(f"[orchestrator] Turn timeout: {turn_timeout}s", file=sys.stderr)
-    print(f"[orchestrator] State database: {state_db.db_path}", file=sys.stderr)
 
     # Start dashboard if requested
     if dashboard_host is not None:
@@ -126,11 +120,10 @@ def run_mcp_mode(
         else:
             print(f"[orchestrator] Turn {turn_num}: completed", file=sys.stderr)
 
-    # Create pipe server with state tracking and run in background thread
+    # Create pipe server and run in background thread
     pipe_server = NamedPipeServer(
         pipe_path,
-        on_turn_start,
-        state_db=state_db
+        on_turn_start
     )
 
     pipe_thread = Thread(target=pipe_server.start, daemon=True)

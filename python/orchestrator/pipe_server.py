@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import ctypes
 import json
+import queue
 import threading
+import uuid
 from ctypes import wintypes
 from typing import Any, Callable, Optional
 
 from .formatting import pretty_print_json
 from .logging_setup import get_logger
-from .state_db import StateDatabase
 from .state_validator import StateValidator
 
 
@@ -93,11 +94,15 @@ class PipeConnection:
         self._lock = threading.Lock()
         self._log = get_logger()
         self._buf = (ctypes.c_char * WinAPI.BUFSIZE)()
+        # Response waiting mechanism for synchronous requests
+        self._pending_responses: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._response_lock = threading.Lock()
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Send an action to the DLL and wait for response.
+        """Send an action to the DLL (fire-and-forget, non-blocking).
 
         Thread-safe: can be called from HTTP handler thread.
+        Never waits for response - we can't trust DLL responses.
         """
         with self._lock:
             # Pretty print outgoing action
@@ -106,22 +111,10 @@ class PipeConnection:
             message = json.dumps(action).encode("utf-8") + b"\n"
             if not self._write(message):
                 self._log.error("Failed to write action to pipe")
-                return {"error": "Pipe write failed"}
-
-            # Read response
-            # response_data = self._read()
-            # if response_data is None:
-            #     self._log.error("Failed to read response from DLL")
-            #     return {"error": "Pipe read failed"}
-
-            # try:
-            #     response = json.loads(response_data.decode("utf-8"))
-            #     # Pretty print response
-            #     self._log.info(f"📥 Response from DLL: {response.get('type', 'unknown')}\n{pretty_print_json(response)}")
-            #     return response
-            # except json.JSONDecodeError as e:
-            #     self._log.error(f"Invalid JSON response: {e}, raw data: {response_data[:100]!r}")
-            #     return {"error": f"Invalid JSON response: {e}"}
+                return {"error": "Pipe write failed", "status": "sent", "action": action}
+            
+            # Fire-and-forget - return immediately
+            return {"status": "sent", "action": action}
 
     def send_end_turn(self) -> None:
         """Send end_turn signal to DLL (no response expected)."""
@@ -138,6 +131,53 @@ class PipeConnection:
             self._log.info(f"📤 Outgoing to DLL: forced_end_turn\n{pretty_print_json(msg)}")
             message = json.dumps(msg).encode("utf-8") + b"\n"
             self._write(message)  # Fire and forget - don't block on errors
+
+    def send_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send a request to the DLL (fire-and-forget, non-blocking).
+        
+        Thread-safe: can be called from HTTP handler thread.
+        Never waits for response - we can't trust DLL responses.
+        
+        Args:
+            request: Request dictionary (must have 'type' field)
+            
+        Returns:
+            Status dict indicating request was sent
+        """
+        with self._lock:
+            # Pretty print outgoing request
+            self._log.info(f"📤 Outgoing to DLL: {request.get('type', 'unknown')}\n{pretty_print_json(request)}")
+            
+            message = json.dumps(request).encode("utf-8") + b"\n"
+            if not self._write(message):
+                self._log.error("Failed to write request to pipe")
+                return {"error": "Pipe write failed", "status": "sent", "request": request}
+            
+            # Fire-and-forget - return immediately
+            return {"status": "sent", "request": request}
+    
+    def deliver_response(self, response: dict[str, Any]) -> bool:
+        """Deliver a response to a waiting request.
+        
+        Called by StateProcessor when it receives a response message.
+        
+        Args:
+            response: Response dictionary (must have 'request_id' field)
+            
+        Returns:
+            True if response was delivered to a waiting request, False otherwise
+        """
+        request_id = response.get("request_id")
+        if not request_id:
+            return False
+        
+        with self._response_lock:
+            response_queue = self._pending_responses.get(request_id)
+            if response_queue:
+                response_queue.put(response)
+                return True
+        
+        return False
 
     def _write(self, data: bytes) -> bool:
         bytes_written = wintypes.DWORD(0)
@@ -168,16 +208,8 @@ OnTurnStart = Callable[[dict[str, Any], PipeConnection], None]
 class StateProcessor:
     """Processes incoming state messages with validation and persistence."""
     
-    def __init__(
-        self,
-        state_db: Optional[StateDatabase] = None
-    ):
-        """Initialize state processor.
-        
-        Args:
-            state_db: Optional database for persistence
-        """
-        self.state_db = state_db
+    def __init__(self):
+        """Initialize state processor."""
         self.validator = StateValidator()
         self._last_state: Optional[dict[str, Any]] = None
         self._log = get_logger()
@@ -197,31 +229,38 @@ class StateProcessor:
         """
         msg_type = state.get("type", "unknown")
         
-        # Handle game notifications from DLL
+        # Handle response messages (player_status_result, units_result, action_result, etc.)
+        # These need to be delivered to waiting requests
+        if msg_type in ("player_status_result", "units_result", "action_result") or msg_type.endswith("_result"):
+            if pipe_conn.deliver_response(state):
+                # Response was delivered to a waiting request
+                return
+            # If no waiting request, log and skip (response messages aren't state updates)
+            self._log.debug(f"Received {msg_type} response with no waiting request")
+            return
+        
+        # Handle error responses
+        if msg_type == "error" and "request_id" in state:
+            if pipe_conn.deliver_response(state):
+                # Error response was delivered to a waiting request
+                return
+            # If no waiting request, log and skip
+            self._log.debug(f"Received error response with no waiting request: {state.get('message')}")
+            return
+        
+        # Log EVERYTHING from DLL to JSONL file
+        # Import here to avoid circular dependency
+        from .notification_logger import DLLMessageLogger
+        
+        # Get or create message logger (simple singleton pattern)
+        if not hasattr(self, "_message_logger"):
+            self._message_logger = DLLMessageLogger()
+        
+        # Just push everything we get from DLL
+        self._message_logger.log_message(state)
+        
+        # Handle game notifications from DLL (still return early, don't process as state)
         if msg_type == "game_notification" or msg_type == "notification":
-            notif_type = state.get("notification_type", "unknown")
-            message = state.get("message", "")
-            title = state.get("title")
-            turn = state.get("turn")
-            
-            # Log the notification with full details
-            log_msg = f"Game notification [{notif_type}]"
-            if title:
-                log_msg += f": {title}"
-            if message:
-                log_msg += f" - {message}"
-            if turn is not None:
-                log_msg += f" (turn {turn})"
-            # self._log.info(log_msg)
-            
-            if self.state_db:
-                self.state_db.save_game_notification(
-                    notification_type=notif_type,
-                    message=message,
-                    title=title,
-                    turn=turn,
-                    data=state.get("data")
-                )
             return  # Don't process as a state message
         
         # Validate state
@@ -229,8 +268,6 @@ class StateProcessor:
         
         if not is_valid:
             self._log.error(f"State validation failed: {error_msg}")
-            if self.state_db:
-                self.state_db.save_state(state, validated=False, validation_errors=error_msg)
             return
         
         # Check consistency with previous state
@@ -238,10 +275,6 @@ class StateProcessor:
             is_consistent, warning = self.validator.check_state_consistency(self._last_state, state)
             if not is_consistent:
                 self._log.warning(f"State consistency issue: {warning}")
-        
-        # Save to database
-        if self.state_db:
-            self.state_db.save_state(state, validated=True)
         
         # Update last state
         self._last_state = state
@@ -264,8 +297,7 @@ class NamedPipeServer:
     def __init__(
         self,
         pipe_name: str,
-        on_turn_start: OnTurnStart,
-        state_db: Optional[StateDatabase] = None
+        on_turn_start: OnTurnStart
     ):
         if not pipe_name.startswith("\\\\.\\pipe\\"):
             raise ValueError("pipe_name must start with \\\\.\\pipe\\")
@@ -278,7 +310,7 @@ class NamedPipeServer:
         self._handler_lock = threading.Lock()
         
         # State processing
-        self.state_processor = StateProcessor(state_db)
+        self.state_processor = StateProcessor()
 
     def start(self) -> None:
         if self._running:

@@ -12,6 +12,7 @@ to the LLM, allowing it to see the result before deciding the next action.
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from .formatting import format_game_state, pretty_print_json
@@ -80,7 +81,7 @@ AVAILABLE_TOOLS = [
     },
     {
         "name": "send_action",
-        "description": "Send an action to the game immediately and get the result.",
+        "description": "Send an action to the game (fire-and-forget, non-blocking). Does not wait for response.",
         "parameters": ["action"],
     },
     {
@@ -91,7 +92,7 @@ AVAILABLE_TOOLS = [
     {
         "name": "get_units",
         "description": "Get information about all units.",
-        "parameters": {"unit_id": "optional int"},
+        "parameters": {"player_id": "optional int (defaults to active player)"},
     },
     {
         "name": "get_tech_tree",
@@ -145,13 +146,18 @@ AVAILABLE_TOOLS = [
     },
     {
         "name": "acknowledge_notification",
-        "description": "Mark a notification as acknowledged.",
+        "description": "Mark a notification as acknowledged by its lookup_index (use the lookup_index field from get_notifications).",
         "parameters": ["notification_id"],
     },
     {
-        "name": "get_state_history",
-        "description": "Get recent game state history from the database.",
-        "parameters": ["limit"],
+        "name": "get_player_status",
+        "description": "Get detailed status information for a player (science, gold, happiness, etc.).",
+        "parameters": {"player_id": "optional int (defaults to active player)"},
+    },
+    {
+        "name": "send_action_with_confirmation",
+        "description": "Send an action and then query the game state after a delay to confirm it executed. Useful for moves where you want to verify the unit moved.",
+        "parameters": {"action": "action dict", "delay_seconds": "optional float (default 0.5)", "query_type": "optional string: 'units'|'state' (default 'units')"},
     },
 ]
 
@@ -169,14 +175,12 @@ class CivMCPServer:
 
     def __init__(
         self,
-        turn_timeout: float = 300.0,
-        state_db: Optional[Any] = None
+        turn_timeout: float = 300.0
     ):
         """Initialize the MCP server.
 
         Args:
             turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
-            state_db: Optional StateDatabase instance for persistence
         """
         self.current_state: Optional[dict[str, Any]] = None
         self.turn_timeout = turn_timeout
@@ -189,6 +193,7 @@ class CivMCPServer:
         self._turn_ended = threading.Event()
         self._turn_notes: str = ""
         self._current_turn_number: Optional[int] = None  # Track which turn is active
+        self._first_turn_of_game: Optional[int] = None  # Track first turn of current game session
         self._lock = threading.Lock()
         
         # Action statistics
@@ -196,8 +201,9 @@ class CivMCPServer:
         self._action_errors = 0
         self._last_action_time: Optional[float] = None
         
-        # State persistence
-        self.state_db = state_db
+        # Message logger (JSONL file) - logs everything from DLL
+        from .notification_logger import DLLMessageLogger
+        self._message_logger = DLLMessageLogger()
 
     def start_turn(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
         """Start a new turn with the given game state and pipe connection.
@@ -211,6 +217,18 @@ class CivMCPServer:
         new_turn_num = state.get("turn")
         
         with self._lock:
+            # Detect new game: if turn goes backwards significantly (more than 10 turns),
+            # or if we don't have a first turn tracked yet, treat it as a new game
+            if new_turn_num is not None:
+                if self._first_turn_of_game is None:
+                    # First turn we've seen - start tracking this game
+                    self._first_turn_of_game = new_turn_num
+                    logger.info(f"Starting new game session (first turn: {new_turn_num})")
+                elif new_turn_num < self._first_turn_of_game - 10:
+                    # Turn went backwards significantly - new game started
+                    logger.info(f"New game detected (turn {new_turn_num} < previous first turn {self._first_turn_of_game})")
+                    self._first_turn_of_game = new_turn_num
+            
             # If there's an active turn, cancel it (new turn_start arrived)
             if self._turn_active:
                 old_turn = self._current_turn_number
@@ -329,7 +347,7 @@ class CivMCPServer:
                 format_type=arguments.get("format", "json")
             ),
             "get_cities": lambda: self._get_cities(city_id=arguments.get("city_id")),
-            "get_units": lambda: self._get_units(unit_id=arguments.get("unit_id")),
+            "get_units": lambda: self._get_units(player_id=arguments.get("player_id")),
             "get_tech_tree": lambda: self._get_tech_tree(),
             "get_diplomacy": lambda: self._get_diplomacy(),
             "get_available_choices": lambda: self._get_available_choices(),
@@ -372,13 +390,25 @@ class CivMCPServer:
             self._log_tool_result(name, result, is_error="error" in result)
             return result
 
-        if name == "get_state_history":
-            limit = arguments.get("limit", 10)
-            if not isinstance(limit, int) or limit < 1:
-                error = {"error": "limit must be a positive integer"}
-                self._log_tool_result(name, error, is_error=True)
-                return error
-            result = self._get_state_history(limit)
+        if name == "get_player_status":
+            player_id = arguments.get("player_id")
+            result = self._get_player_status(player_id=player_id)
+            self._log_tool_result(name, result, is_error="error" in result)
+            return result
+
+        if name == "send_action_with_confirmation":
+            action = arguments.get("action")
+            if action is None:
+                return {"error": "Missing required parameter 'action'"}
+            if not isinstance(action, dict):
+                return {"error": f"Parameter 'action' must be a dictionary, got {type(action).__name__}"}
+            delay_seconds = arguments.get("delay_seconds", 0.5)
+            query_type = arguments.get("query_type", "units")
+            result = self._send_action_with_confirmation(
+                action=action,
+                delay_seconds=delay_seconds,
+                query_type=query_type
+            )
             self._log_tool_result(name, result, is_error="error" in result)
             return result
 
@@ -421,56 +451,27 @@ class CivMCPServer:
         # Action will be pretty-printed in pipe_server.send_action()
         logger.debug(f"Turn {current_turn}: Preparing action '{action_kind}'")
 
-        # Send action and get response synchronously
+        # Send action (fire-and-forget, non-blocking)
         try:
-            response = pipe_conn.send_action({"type": "action", "action": action})
+            result = pipe_conn.send_action({"type": "action", "action": action})
+            # send_action now returns immediately with status
+            if "error" in result:
+                with self._lock:
+                    self._action_errors += 1
+                return result
+            
+            # Action sent successfully
+            with self._lock:
+                self._action_count += 1
+                self._last_action_time = time.time()
+            
+            logger.debug(f"Action '{action_kind}' sent (fire-and-forget)")
+            return {"status": "sent", "action": action, "message": "Action sent to DLL (no response expected)"}
         except Exception as e:
             with self._lock:
                 self._action_errors += 1
             logger.error(f"Exception sending action: {e}", exc_info=True)
             return {"error": f"Failed to send action: {e}"}
-
-        # Check if response indicates an error
-        success = not (isinstance(response, dict) and "error" in response)
-        if not success:
-            with self._lock:
-                self._action_errors += 1
-            logger.warning(f"DLL returned error for action '{action_kind}': {response.get('error')}")
-        else:
-            with self._lock:
-                self._action_count += 1
-                self._last_action_time = time.time()
-        
-        # Save action to database if available
-        if self.state_db:
-            try:
-                self.state_db.save_action(
-                    turn=current_turn,
-                    action=action,
-                    response=response if isinstance(response, dict) else None,
-                    success=success
-                )
-            except Exception as e:
-                logger.warning(f"Failed to save action to database: {e}")
-
-        # Response already pretty-printed in pipe_server.send_action()
-        logger.debug(f"Action '{action_kind}' completed")
-
-        # Update current state if response includes updated state or state_delta
-        if isinstance(response, dict):
-            with self._lock:
-                if self.current_state and "state" in response:
-                    # Full state update
-                    self.current_state["state"] = response["state"]
-                    logger.debug("Updated state from full state in response")
-                elif self.current_state and "state_delta" in response:
-                    # Incremental state update
-                    current_state_data = self.current_state.get("state", {})
-                    delta = response["state_delta"]
-                    self.current_state["state"] = _merge_state_delta(current_state_data, delta)
-                    logger.debug("Updated state from state_delta in response")
-
-        return response
 
     def _end_turn(self, notes: str = "") -> dict[str, Any]:
         """Signal that the LLM is done with its turn."""
@@ -559,7 +560,7 @@ class CivMCPServer:
 
         return {"cities": cities, "count": len(cities)}
 
-    def _get_units(self, unit_id: Optional[int] = None) -> dict[str, Any]:
+    def _get_units(self, player_id: Optional[int] = None) -> dict[str, Any]:
         """Get unit information."""
         state = self.current_state
         if not state:
@@ -567,11 +568,9 @@ class CivMCPServer:
 
         units = self.current_state.get("state", {}).get("units", [])
 
-        if unit_id is not None:
-            unit = next((u for u in units if u.get("id") == unit_id), None)
-            if unit:
-                return unit
-            return {"error": f"Unit {unit_id} not found"}
+        if player_id is not None:
+            filtered_units = [u for u in units if u.get("player_id") == player_id]
+            return {"units": filtered_units, "count": len(filtered_units)}
 
         return {"units": units, "count": len(units)}
 
@@ -648,37 +647,129 @@ class CivMCPServer:
         return {"formatted": formatted}
     
     def _get_notifications(self) -> dict[str, Any]:
-        """Get unacknowledged notifications."""
-        if not self.state_db:
-            return {"error": "State database not available"}
+        """Get unacknowledged notifications from the current game only."""
+        # Get current player and turn for filtering
+        with self._lock:
+            first_turn = self._first_turn_of_game
+            current_state = self.current_state
         
-        notifications = self.state_db.get_unacknowledged_notifications()
+        # Get current player ID from state
+        player_id = None
+        if current_state:
+            player_id = current_state.get("player_id")
+        
+        # Get notifications from JSONL file (filter by type="notification")
+        notifications = self._message_logger.get_messages(
+            message_type="notification",
+            min_turn=first_turn,
+            player_id=player_id,
+            unacknowledged_only=True
+        )
+        
         return {
             "notifications": notifications,
             "count": len(notifications)
         }
     
     def _acknowledge_notification(self, notification_id: int) -> dict[str, Any]:
-        """Acknowledge a notification."""
-        if not self.state_db:
-            return {"error": "State database not available"}
+        """Acknowledge a notification by lookup_index.
         
+        Note: notification_id parameter is actually the lookup_index from the DLL.
+        """
         if not isinstance(notification_id, int):
             return {"error": f"notification_id must be an integer, got {type(notification_id).__name__}"}
         
-        success = self.state_db.acknowledge_notification(notification_id)
-        if success:
-            return {"status": "acknowledged", "notification_id": notification_id}
-        else:
-            return {"error": f"Notification {notification_id} not found"}
+        # Acknowledge by lookup_index
+        self._message_logger.acknowledge_notification(notification_id)
+        return {"status": "acknowledged", "lookup_index": notification_id}
     
-    def _get_state_history(self, limit: int) -> dict[str, Any]:
-        """Get state history from database."""
-        if not self.state_db:
-            return {"error": "State database not available"}
+    def _get_player_status(self, player_id: Optional[int] = None) -> dict[str, Any]:
+        """Get detailed player status from cached state (non-blocking).
         
-        history = self.state_db.get_state_history(limit=limit)
+        Note: This reads from cached state, not directly from DLL.
+        For fresh data, use get_game_state which gets updated state from turn_start.
+        
+        Args:
+            player_id: Optional player ID (defaults to active player if None)
+            
+        Returns:
+            Player status dictionary with science, gold, happiness, etc.
+        """
+        state = self.current_state
+        if not state:
+            return {"error": "No game state available"}
+        
+        # Get player status from cached state
+        state_data = state.get("state", {})
+        player_id_to_use = player_id
+        if player_id_to_use is None:
+            player_id_to_use = state.get("player_id")
+        
+        # Try to get player-specific data from state
+        players = state_data.get("players", [])
+        if players:
+            player = next((p for p in players if p.get("id") == player_id_to_use), None)
+            if player:
+                return player
+        
+        # Fallback: return general player info
         return {
-            "history": history,
-            "count": len(history)
+            "player_id": player_id_to_use,
+            "message": "Player status retrieved from cached state. Use get_game_state for full details."
         }
+    
+    def _send_action_with_confirmation(
+        self,
+        action: dict[str, Any],
+        delay_seconds: float = 0.5,
+        query_type: str = "units"
+    ) -> dict[str, Any]:
+        """Send an action and then query game state after a delay to confirm execution.
+        
+        This is useful for actions like unit moves where you want to verify the unit
+        actually moved to the expected location.
+        
+        Args:
+            action: Action dictionary to send
+            delay_seconds: How long to wait before querying state (default 0.5)
+            query_type: What to query after delay - "units" or "state" (default "units")
+            
+        Returns:
+            Dictionary with action send status and query results
+        """
+        # Send the action (non-blocking)
+        send_result = self._send_action(action)
+        
+        if "error" in send_result:
+            return send_result
+        
+        # Wait for the delay
+        time.sleep(delay_seconds)
+        
+        # Query state based on query_type
+        query_result = {}
+        if query_type == "units":
+            # Get units to check if move happened
+            units_result = self._get_units()
+            query_result = {
+                "query_type": "units",
+                "units": units_result
+            }
+        elif query_type == "state":
+            # Get full game state
+            state_result = self._get_game_state()
+            query_result = {
+                "query_type": "state",
+                "state": state_result
+            }
+        else:
+            query_result = {
+                "error": f"Unknown query_type: {query_type}. Use 'units' or 'state'"
+            }
+        
+        return {
+            "action_sent": send_result,
+            "confirmation_query": query_result,
+            "delay_seconds": delay_seconds
+        }
+    
