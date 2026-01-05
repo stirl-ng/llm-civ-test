@@ -122,14 +122,6 @@ class PipeConnection:
             message = json.dumps(msg).encode("utf-8") + b"\n"
             self._write(message)  # Fire and forget - don't block on errors
 
-    def send_forced_end_turn(self) -> None:
-        """Send forced_end_turn signal to DLL (no response expected)."""
-        with self._lock:
-            msg = {"type": "forced_end_turn"}
-            self._log.info(f"📤 Outgoing to DLL: forced_end_turn: {msg}")
-            message = json.dumps(msg).encode("utf-8") + b"\n"
-            self._write(message)  # Fire and forget - don't block on errors
-
     def send_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Send a request to the DLL (fire-and-forget, non-blocking).
         
@@ -421,7 +413,7 @@ class NamedPipeServer:
 
                 # Log incoming message from DLL
                 msg_type = state.get("type", "unknown") if isinstance(state, dict) else "non-dict"
-                self._log.info(f"📥 Incoming from DLL: {msg_type}")
+                self._log.info(f"📥 Incoming from DLL: {msg_type}: {state}")
 
                 # Process state (validation, persistence, notifications)
                 self.state_processor.process_state(state, self.on_turn_start, pipe_conn)

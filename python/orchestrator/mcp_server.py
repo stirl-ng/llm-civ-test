@@ -103,11 +103,6 @@ AVAILABLE_TOOLS = [
         "parameters": ["notes"],
     },
     {
-        "name": "forced_end_turn",
-        "description": "Force end the current turn (bypasses canEndTurn check).",
-        "parameters": ["notes"],
-    },
-    {
         "name": "get_notifications",
         "description": "Get unacknowledged notifications from the DLL.",
         "parameters": [],
@@ -304,12 +299,12 @@ class CivMCPServer:
 
     def _log_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         """Log a tool call (for tools that don't generate pipe messages)."""
-        if name not in ("send_action", "end_turn", "forced_end_turn"):
+        if name not in ("send_action", "end_turn"):
             logger.info(f"🔧 TOOL CALL: {name}\n{arguments}")
 
     def _log_tool_result(self, name: str, result: dict[str, Any], is_error: bool = False) -> None:
         """Log a tool result."""
-        if name in ("send_action", "end_turn", "forced_end_turn"):
+        if name in ("send_action", "end_turn"):
             return
         if is_error:
             logger.warning(f"❌ TOOL ERROR: {name}: {result}")
@@ -353,9 +348,6 @@ class CivMCPServer:
         # Turn control
         if name == "end_turn":
             return self._end_turn(notes=arguments.get("notes", ""))
-
-        if name == "forced_end_turn":
-            return self._forced_end_turn(notes=arguments.get("notes", ""))
 
         # Tools with validation
         if name == "acknowledge_notification":
@@ -486,32 +478,6 @@ class CivMCPServer:
         logger.info(f"✅ Turn {current_turn} ended by LLM" + (f" (notes: {notes})" if notes else ""))
         return {
             "status": "turn_ended",
-            "notes": notes
-        }
-
-    def _forced_end_turn(self, notes: str = "") -> dict[str, Any]:
-        """Force end the current turn (bypasses canEndTurn check)."""
-        with self._lock:
-            if not self._turn_active:
-                current_turn = self._current_turn_number
-                logger.warning(f"forced_end_turn called but no active turn (current_turn_number={current_turn})")
-                return {"error": "No active turn to end"}
-
-            self._turn_notes = notes
-            pipe_conn = self._pipe_conn
-            current_turn = self._current_turn_number
-
-        # Send forced_end_turn to DLL (fire and forget - don't block)
-        # Message will be pretty-printed in pipe_server.send_forced_end_turn()
-        if pipe_conn:
-            pipe_conn.send_forced_end_turn()
-
-        # Signal orchestrator that turn is done
-        self._turn_ended.set()
-
-        logger.info(f"⚡ Turn {current_turn} force ended by LLM" + (f" (notes: {notes})" if notes else ""))
-        return {
-            "status": "turn_force_ended",
             "notes": notes
         }
 

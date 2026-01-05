@@ -479,7 +479,6 @@ DASHBOARD_HTML = """
                 <div class="command-section">
                     <h3>Actions</h3>
                     <button class="command-btn action" onclick="runCommand('end_turn')">End Turn</button>
-                    <button class="command-btn action" onclick="runCommand('forced_end_turn')">Force End Turn</button>
                 </div>
 
                 <div class="command-section">
