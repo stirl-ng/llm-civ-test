@@ -2,7 +2,7 @@
 MCP Server for Civilization V LLM Orchestrator
 
 Provides tools for LLMs to:
-- Query game state (cached from turn start)
+- Query game state (via DLL requests)
 - Send actions immediately to the DLL (synchronous, with response)
 - End their turn when done deciding
 
@@ -122,6 +122,11 @@ AVAILABLE_TOOLS = [
         "description": "Send an action and then query the game state after a delay to confirm it executed. Useful for moves where you want to verify the unit moved.",
         "parameters": {"action": "action dict", "delay_seconds": "optional float (default 0.5)", "query_type": "optional string: 'units'|'state' (default 'units')"},
     },
+    {
+        "name": "ping",
+        "description": "Ping the server to check connectivity and get server status.",
+        "parameters": {},
+    },
 ]
 
 
@@ -130,7 +135,7 @@ class CivMCPServer:
 
     Sequential turn flow:
     1. Orchestrator calls start_turn(state, pipe_connection)
-    2. LLM queries state and sends actions via tools
+    2. LLM queries state and sends actions via tools (all queries go to DLL)
     3. Each action is sent immediately to DLL, response returned to LLM
     4. LLM calls end_turn when done
     5. Orchestrator resumes, signals DLL to advance turn
@@ -145,7 +150,6 @@ class CivMCPServer:
         Args:
             turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
         """
-        self.current_state: Optional[dict[str, Any]] = None
         self.turn_timeout = turn_timeout
 
         # Pipe connection for sending actions (set during turn)
@@ -174,7 +178,7 @@ class CivMCPServer:
         If a turn is already active, it will be cancelled (e.g., user manually advanced turn).
 
         Args:
-            state: Game state from DLL
+            state: Game state from DLL (not cached, just used for turn number)
             pipe_conn: PipeConnection for sending actions to DLL
         """
         new_turn_num = state.get("turn")
@@ -213,7 +217,6 @@ class CivMCPServer:
                     self._turn_ended.set()
             
             # Now set up the new turn
-            self.current_state = state
             self._pipe_conn = pipe_conn
             self._turn_notes = ""
             # Clear the event for the new turn (old turn should have seen it by now)
@@ -315,20 +318,20 @@ class CivMCPServer:
         """Execute a tool and return results."""
         self._log_tool_call(name, arguments)
 
-        # Query tools - simple parameter extraction and dispatch
+        # Query tools - return dummy responses (will be replaced with DLL calls later)
         query_tools = {
-            "get_game_state": lambda: self._get_game_state(
+            "get_game_state": lambda: self._get_game_state_dummy(
                 category=arguments.get("category")
             ),
-            "get_cities": lambda: self._get_cities(city_id=arguments.get("city_id")),
-            "get_units": lambda: self._get_units(player_id=arguments.get("player_id")),
-            "get_tech_tree": lambda: self._get_tech_tree(),
-            "get_diplomacy": lambda: self._get_diplomacy(),
-            "get_available_choices": lambda: self._get_available_choices(),
-            "get_victory_progress": lambda: self._get_victory_progress(),
-            "get_resources": lambda: self._get_resources(),
-            "get_state_refresh": lambda: self._get_state_refresh(),
-            "get_notifications": lambda: self._get_notifications(),
+            "get_cities": lambda: self._get_cities_dummy(city_id=arguments.get("city_id")),
+            "get_units": lambda: self._get_units_dummy(player_id=arguments.get("player_id")),
+            "get_tech_tree": lambda: self._get_tech_tree_dummy(),
+            "get_diplomacy": lambda: self._get_diplomacy_dummy(),
+            "get_available_choices": lambda: self._get_available_choices_dummy(),
+            "get_victory_progress": lambda: self._get_victory_progress_dummy(),
+            "get_resources": lambda: self._get_resources_dummy(),
+            "get_state_refresh": lambda: self._get_state_refresh_dummy(),
+            "get_notifications": lambda: self._get_notifications_dummy(),
         }
 
         if name in query_tools:
@@ -356,13 +359,13 @@ class CivMCPServer:
                 error = {"error": "Missing required parameter 'notification_id'"}
                 self._log_tool_result(name, error, is_error=True)
                 return error
-            result = self._acknowledge_notification(notification_id)
+            result = self._acknowledge_notification_dummy(notification_id)
             self._log_tool_result(name, result, is_error="error" in result)
             return result
 
         if name == "get_player_status":
             player_id = arguments.get("player_id")
-            result = self._get_player_status(player_id=player_id)
+            result = self._get_player_status_dummy(player_id=player_id)
             self._log_tool_result(name, result, is_error="error" in result)
             return result
 
@@ -379,6 +382,11 @@ class CivMCPServer:
                 delay_seconds=delay_seconds,
                 query_type=query_type
             )
+            self._log_tool_result(name, result, is_error="error" in result)
+            return result
+
+        if name == "ping":
+            result = self._ping()
             self._log_tool_result(name, result, is_error="error" in result)
             return result
 
@@ -433,22 +441,27 @@ class CivMCPServer:
         if "kind" in message:
             del message["kind"]
 
-        # Send action (fire-and-forget, non-blocking)
+        # Log outgoing message to JSONL
+        log_msg = message.copy()
+        log_msg["direction"] = "outgoing"
+        self._message_logger.log_message(log_msg)
+
+        # Send action (synchronous, blocks until result or timeout)
         try:
-            result = pipe_conn.send_action(message)
-            # send_action now returns immediately with status
+            # We'll use a 10s timeout for actions
+            result = pipe_conn.send_action(message, timeout=10.0)
+            
             if "error" in result:
                 with self._lock:
                     self._action_errors += 1
                 return result
             
-            # Action sent successfully
+            # Action succeeded or returned a result
             with self._lock:
                 self._action_count += 1
                 self._last_action_time = time.time()
             
-            logger.debug(f"Action '{action_kind}' sent (fire-and-forget)")
-            return {"status": "sent", "action": action, "message": "Action sent to DLL (no response expected)"}
+            return result
         except Exception as e:
             with self._lock:
                 self._action_errors += 1
@@ -456,206 +469,137 @@ class CivMCPServer:
             return {"error": f"Failed to send action: {e}"}
 
     def _end_turn(self, notes: str = "") -> dict[str, Any]:
-        """Signal that the LLM is done with its turn."""
+        """Signal that the LLM is done with its turn and wait for DLL confirmation.
+        
+        The DLL might block the end-turn request if there are pending units, 
+        tech choices, etc. This method waits for the authoritative result.
+        """
         with self._lock:
             if not self._turn_active:
-                current_turn = self._current_turn_number
-                logger.warning(f"end_turn called but no active turn (current_turn_number={current_turn})")
-                return {"error": "No active turn to end"}
-
-            self._turn_notes = notes
+                return {"error": "No active turn to end", "status": "error"}
             pipe_conn = self._pipe_conn
             current_turn = self._current_turn_number
 
-        # Send end_turn to DLL (fire and forget - don't block)
-        # Message will be pretty-printed in pipe_server.send_end_turn()
-        if pipe_conn:
-            pipe_conn.send_end_turn()
+        if not pipe_conn:
+            return {"error": "No pipe connection available"}
 
-        # Signal orchestrator that turn is done
-        self._turn_ended.set()
+        logger.info(f"LLM requesting end_turn (turn {current_turn})")
 
-        logger.info(f"✅ Turn {current_turn} ended by LLM" + (f" (notes: {notes})" if notes else ""))
-        return {
-            "status": "turn_ended",
-            "notes": notes
-        }
+        # Log outgoing end_turn message to JSONL
+        end_turn_msg = {"type": "end_turn", "request_id": str(uuid.uuid4()), "direction": "outgoing"}
+        if current_turn is not None:
+            end_turn_msg["turn"] = current_turn
+        self._message_logger.log_message(end_turn_msg)
 
-    def _get_game_state(self, category: Optional[str] = None) -> dict[str, Any]:
-        """Get current game state, optionally filtered by category."""
-        if not self.current_state:
-            return {"error": "No game state available - not your turn yet"}
-
-        state = self.current_state.get("state", {})
-
-        if category:
-            if category in state:
-                state = {category: state[category]}
+        # Send end_turn to DLL and wait for end_turn_result
+        try:
+            result = pipe_conn.send_end_turn(turn=current_turn, timeout=15.0)
+            
+            status = result.get("status", "unknown")
+            
+            if status == "success":
+                # Only signal orchestrator that turn is done if DLL confirms success
+                with self._lock:
+                    self._turn_notes = notes
+                    self._turn_active = False # Transition out of active state
+                
+                self._turn_ended.set()
+                
+                turn_info = f"Turn {current_turn}" if current_turn is not None else "Turn ?"
+                logger.info(f"✅ {turn_info} ended successfully (confirmed by DLL)")
+                return {
+                    "status": "success",
+                    "turn": current_turn,
+                    "message": "Turn ended successfully"
+                }
+            
+            elif status == "blocked":
+                blocker = result.get("blocker", "unknown")
+                logger.warning(f"❌ End turn blocked by: {blocker}")
+                return {
+                    "status": "blocked",
+                    "blocker": blocker,
+                    "message": f"Turn cannot end yet: {blocker}. Please resolve the blocker and try again."
+                }
+            
+            elif status == "already_ended":
+                logger.info("End turn requested but turn already ended")
+                with self._lock:
+                    self._turn_active = False
+                self._turn_ended.set()
+                return {
+                    "status": "already_ended",
+                    "message": "Turn has already been ended"
+                }
+            
+            elif status == "timeout":
+                logger.error("Timeout waiting for end_turn_result from DLL")
+                return {
+                    "status": "timeout",
+                    "error": "DLL did not respond to end_turn request in time"
+                }
+            
             else:
-                return {"error": f"Category '{category}' not found", "available": list(state.keys())}
+                logger.error(f"Unexpected end_turn status: {status}")
+                return {
+                    "status": "error",
+                    "error": f"DLL returned unexpected status: {status}",
+                    "result": result
+                }
+                
+        except Exception as e:
+            logger.error(f"Exception during end_turn: {e}", exc_info=True)
+            return {"error": f"Failed to end turn: {e}"}
 
-        return state
+    def _get_game_state_dummy(self, category: Optional[str] = None) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-    def _get_cities(self, city_id: Optional[int] = None) -> dict[str, Any]:
-        """Get city information."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
+    def _get_cities_dummy(self, city_id: Optional[int] = None) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        cities = self.current_state.get("state", {}).get("cities", [])
+    def _get_units_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        if city_id is not None:
-            city = next((c for c in cities if c.get("id") == city_id), None)
-            if city:
-                return city
-            return {"error": f"City {city_id} not found"}
+    def _get_tech_tree_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        return {"cities": cities, "count": len(cities)}
+    def _get_diplomacy_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-    def _get_units(self, player_id: Optional[int] = None) -> dict[str, Any]:
-        """Get unit information."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
+    def _get_available_choices_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        units = self.current_state.get("state", {}).get("units", [])
+    def _get_victory_progress_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        if player_id is not None:
-            filtered_units = [u for u in units if u.get("player_id") == player_id]
-            return {"units": filtered_units, "count": len(filtered_units)}
+    def _get_resources_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-        return {"units": units, "count": len(units)}
+    def _get_state_refresh_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-    def _get_tech_tree(self) -> dict[str, Any]:
-        """Get technology tree information."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
+    def _get_notifications_dummy(self) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"notifications": [], "count": 0, "message": "Dummy response - will query DLL directly"}
 
-        return self.current_state.get("state", {}).get("technology", {})
-
-    def _get_diplomacy(self) -> dict[str, Any]:
-        """Get diplomacy information."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
-
-        return self.current_state.get("state", {}).get("diplomacy", {})
-
-    def _get_available_choices(self) -> dict[str, Any]:
-        """Get all pending choices/decisions."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
-
-        data = self.current_state.get("state", {})
-        choices = {}
-        if state.get("needs_tech_choice"):
-            choices["tech"] = state.get("available_techs", [])
-        if state.get("needs_policy_choice"):
-            choices["policy"] = state.get("available_policies", [])
-        if state.get("needs_production_choice"):
-            choices["production"] = state.get("cities_needing_production", [])
-
-        return {"pending_choices": choices, "has_choices": len(choices) > 0}
-
-    def _get_victory_progress(self) -> dict[str, Any]:
-        """Get victory condition progress."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
-
-        data = self.current_state.get("state", {})
-        return {
-            "victory_conditions": state.get("victory_conditions", []),
-            "victory_progress": state.get("victory_progress", {})
-        }
-
-    def _get_resources(self) -> dict[str, Any]:
-        """Get resource information."""
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
-
-        data = self.current_state.get("state", {})
-        return {
-            "strategic": data.get("strategic_resources", {}),
-            "luxury": data.get("luxury_resources", {}),
-            "total": data.get("resources", {})
-        }
-
-    
-    def _get_notifications(self) -> dict[str, Any]:
-        """Get unacknowledged notifications from the current game only."""
-        # Get current player and turn for filtering
-        with self._lock:
-            first_turn = self._first_turn_of_game
-            current_state = self.current_state
-        
-        # Get current player ID from state
-        player_id = None
-        if current_state:
-            player_id = current_state.get("player_id")
-        
-        # Get notifications from JSONL file (filter by type="notification")
-        notifications = self._message_logger.get_messages(
-            message_type="notification",
-            min_turn=first_turn,
-            player_id=player_id,
-            unacknowledged_only=True
-        )
-        
-        return {
-            "notifications": notifications,
-            "count": len(notifications)
-        }
-    
-    def _acknowledge_notification(self, notification_id: int) -> dict[str, Any]:
-        """Acknowledge a notification by lookup_index.
-        
-        Note: notification_id parameter is actually the lookup_index from the DLL.
-        """
+    def _acknowledge_notification_dummy(self, notification_id: int) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
         if not isinstance(notification_id, int):
             return {"error": f"notification_id must be an integer, got {type(notification_id).__name__}"}
-        
-        # Acknowledge by lookup_index
-        self._message_logger.acknowledge_notification(notification_id)
-        return {"status": "acknowledged", "lookup_index": notification_id}
-    
-    def _get_player_status(self, player_id: Optional[int] = None) -> dict[str, Any]:
-        """Get detailed player status from cached state (non-blocking).
-        
-        Note: This reads from cached state, not directly from DLL.
-        For fresh data, use get_game_state which gets updated state from turn_start.
-        
-        Args:
-            player_id: Optional player ID (defaults to active player if None)
-            
-        Returns:
-            Player status dictionary with science, gold, happiness, etc.
-        """
-        state = self.current_state
-        if not state:
-            return {"error": "No game state available"}
-        
-        # Get player status from cached state
-        state_data = state.get("state", {})
-        player_id_to_use = player_id
-        if player_id_to_use is None:
-            player_id_to_use = state.get("player_id")
-        
-        # Try to get player-specific data from state
-        players = state_data.get("players", [])
-        if players:
-            player = next((p for p in players if p.get("id") == player_id_to_use), None)
-            if player:
-                return player
-        
-        # Fallback: return general player info
-        return {
-            "player_id": player_id_to_use,
-            "message": "Player status retrieved from cached state. Use get_game_state for full details."
-        }
+        return {"status": "acknowledged", "lookup_index": notification_id, "message": "Dummy response - will send to DLL"}
+
+    def _get_player_status_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
+        """Dummy response - will be replaced with DLL call."""
+        return {"message": "Dummy response - state caching removed, will query DLL directly"}
     
     def _send_action_with_confirmation(
         self,
@@ -685,18 +629,18 @@ class CivMCPServer:
         # Wait for the delay
         time.sleep(delay_seconds)
         
-        # Query state based on query_type
+        # Query state based on query_type (dummy responses for now)
         query_result = {}
         if query_type == "units":
             # Get units to check if move happened
-            units_result = self._get_units()
+            units_result = self._get_units_dummy()
             query_result = {
                 "query_type": "units",
                 "units": units_result
             }
         elif query_type == "state":
             # Get full game state
-            state_result = self._get_game_state()
+            state_result = self._get_game_state_dummy()
             query_result = {
                 "query_type": "state",
                 "state": state_result
@@ -711,4 +655,88 @@ class CivMCPServer:
             "confirmation_query": query_result,
             "delay_seconds": delay_seconds
         }
+    
+    def _ping(self) -> dict[str, Any]:
+        """Ping the DLL to check connectivity and get server status.
+        
+        Sends a ping message to the DLL via the pipe connection and waits for a pong response.
+        
+        Returns:
+            Dictionary with DLL response (pong), server status, timestamp, and turn information
+        """
+        with self._lock:
+            if not self._turn_active:
+                return {
+                    "error": "Cannot ping - no active turn (no pipe connection available)",
+                    "status": "error"
+                }
+            pipe_conn = self._pipe_conn
+            turn_active = self._turn_active
+            turn_number = self._current_turn_number
+            action_count = self._action_count
+            action_errors = self._action_errors
+        
+        if not pipe_conn:
+            return {
+                "error": "No pipe connection available",
+                "status": "error"
+            }
+        
+        # Send ping message to DLL
+        ping_message = {
+            "type": "ping",
+            "request_id": str(uuid.uuid4())
+        }
+        
+        # Log outgoing ping message to JSONL (before sending)
+        log_ping = ping_message.copy()
+        log_ping["direction"] = "outgoing"
+        self._message_logger.log_message(log_ping)
+        
+        try:
+            # Use send_request to send ping and wait for pong response
+            # send_request will use our request_id (it only generates one if missing)
+            result = pipe_conn.send_request(ping_message, timeout=5.0)
+            
+            # Check if we got a pong response
+            if result.get("type") == "pong":
+                return {
+                    "status": "ok",
+                    "server": "civ5-mcp",
+                    "dll_response": "pong",
+                    "timestamp": time.time(),
+                    "turn_active": turn_active,
+                    "turn_number": turn_number,
+                    "action_count": action_count,
+                    "action_errors": action_errors,
+                    "message": "Pong! DLL is responding.",
+                    "request_id": result.get("request_id")
+                }
+            elif "error" in result:
+                return {
+                    "status": "error",
+                    "error": result.get("error"),
+                    "message": "Failed to ping DLL",
+                    "timestamp": time.time(),
+                    "turn_active": turn_active,
+                    "turn_number": turn_number
+                }
+            else:
+                return {
+                    "status": "unknown",
+                    "dll_response": result,
+                    "message": "Received unexpected response from DLL",
+                    "timestamp": time.time(),
+                    "turn_active": turn_active,
+                    "turn_number": turn_number
+                }
+        except Exception as e:
+            logger.error(f"Exception during ping: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": f"Failed to ping DLL: {e}",
+                "timestamp": time.time(),
+                "turn_active": turn_active,
+                "turn_number": turn_number
+            }
     

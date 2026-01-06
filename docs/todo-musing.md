@@ -48,6 +48,10 @@ New Era
     Other players are notified of us entering a new era, but not ourselves, ironically
 
 
+Great Work Completed
+    Same as above, others see ours, but we don't see our own
+
+
 Trade / Diplo
     Doesn't show exact trade
         📥 Incoming from DLL: { "type": "diplomatic_message", "player": 2, "diplo_ui_state": 4, "animation": 9, "turn": 95, "message": "You have a Luxury Resource that my people want. On their behalf, let's trade, shall we?" } 

@@ -97,53 +97,115 @@ class PipeConnection:
         self._pending_responses: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._response_lock = threading.Lock()
 
-    def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Send an action to the DLL (fire-and-forget, non-blocking).
+    def send_action(self, action: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+        """Send an action to the DLL and wait for a response.
 
         Thread-safe: can be called from HTTP handler thread.
-        Never waits for response - we can't trust DLL responses.
+        Blocks until DLL returns action_result or timeout expires.
         """
-        with self._lock:
-            self._log.info(f"📤 Outgoing to DLL: action: {action}")
+        request_id = action.get("request_id") or str(uuid.uuid4())
+        action["request_id"] = request_id
+        
+        q = queue.Queue()
+        with self._response_lock:
+            self._pending_responses[request_id] = q
             
-            message = json.dumps(action).encode("utf-8") + b"\n"
-            if not self._write(message):
-                self._log.error("Failed to write action to pipe")
-                return {"error": "Pipe write failed", "status": "sent", "action": action}
+        try:
+            with self._lock:
+                self._log.info(f"📤 Outgoing to DLL: action: {action}")
+                message = json.dumps(action).encode("utf-8") + b"\n"
+                if not self._write(message):
+                    self._log.error("Failed to write action to pipe")
+                    return {"error": "Pipe write failed", "status": "failed", "action": action}
             
-            # Fire-and-forget - return immediately
-            return {"status": "sent", "action": action}
+            try:
+                # Wait for response with timeout
+                response = q.get(timeout=timeout)
+                return response
+            except queue.Empty:
+                self._log.warning(f"Timeout waiting for action_result (request_id: {request_id})")
+                return {"error": "Timeout waiting for response", "status": "timeout", "action": action}
+        finally:
+            with self._response_lock:
+                self._pending_responses.pop(request_id, None)
 
-    def send_end_turn(self) -> None:
-        """Send end_turn signal to DLL (no response expected)."""
-        with self._lock:
-            msg = {"type": "end_turn"}
-            self._log.info(f"📤 Outgoing to DLL: end_turn: {msg}")
-            message = json.dumps(msg).encode("utf-8") + b"\n"
-            self._write(message)  # Fire and forget - don't block on errors
+    def send_end_turn(self, turn: Optional[int] = None, timeout: float = 15.0) -> dict[str, Any]:
+        """Send end_turn signal to DLL and wait for end_turn_result.
+        
+        Args:
+            turn: Optional turn number to include in the message
+            timeout: Max seconds to wait for authoritative response
+            
+        Returns:
+            The end_turn_result message from DLL
+        """
+        request_id = str(uuid.uuid4())
+        msg = {"type": "end_turn", "request_id": request_id}
+        if turn is not None:
+            msg["turn"] = turn
+            
+        q = queue.Queue()
+        with self._response_lock:
+            # We also listen for end_turn_result specifically
+            self._pending_responses[request_id] = q
+            # Protocol note: DLL should echo request_id in end_turn_result
+            # If not, deliver_response will need to be smarter.
+            self._pending_responses["end_turn_result"] = q
 
-    def send_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Send a request to the DLL (fire-and-forget, non-blocking).
+        try:
+            with self._lock:
+                self._log.info(f"📤 Outgoing to DLL: end_turn: {msg}")
+                message = json.dumps(msg).encode("utf-8") + b"\n"
+                if not self._write(message):
+                    return {"type": "end_turn_result", "status": "error", "error": "Pipe write failed"}
+            
+            try:
+                # Wait for response with timeout
+                response = q.get(timeout=timeout)
+                return response
+            except queue.Empty:
+                self._log.warning(f"Timeout waiting for end_turn_result")
+                return {"type": "end_turn_result", "status": "timeout"}
+        finally:
+            with self._response_lock:
+                self._pending_responses.pop(request_id, None)
+                self._pending_responses.pop("end_turn_result", None)
+
+    def send_request(self, request: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+        """Send a request to the DLL and wait for response.
         
         Thread-safe: can be called from HTTP handler thread.
-        Never waits for response - we can't trust DLL responses.
         
         Args:
             request: Request dictionary (must have 'type' field)
+            timeout: Seconds to wait for response
             
         Returns:
             Status dict indicating request was sent
         """
-        with self._lock:
-            self._log.info(f"📤 Outgoing to DLL: request: {request}")
+        request_id = request.get("request_id") or str(uuid.uuid4())
+        request["request_id"] = request_id
+        
+        q = queue.Queue()
+        with self._response_lock:
+            self._pending_responses[request_id] = q
             
-            message = json.dumps(request).encode("utf-8") + b"\n"
-            if not self._write(message):
-                self._log.error("Failed to write request to pipe")
-                return {"error": "Pipe write failed", "status": "sent", "request": request}
+        try:
+            with self._lock:
+                self._log.info(f"📤 Outgoing to DLL: request: {request}")
+                message = json.dumps(request).encode("utf-8") + b"\n"
+                if not self._write(message):
+                    self._log.error("Failed to write request to pipe")
+                    return {"error": "Pipe write failed", "status": "failed", "request": request}
             
-            # Fire-and-forget - return immediately
-            return {"status": "sent", "request": request}
+            try:
+                response = q.get(timeout=timeout)
+                return response
+            except queue.Empty:
+                return {"error": "Timeout waiting for response", "status": "timeout", "request": request}
+        finally:
+            with self._response_lock:
+                self._pending_responses.pop(request_id, None)
     
     def deliver_response(self, response: dict[str, Any]) -> bool:
         """Deliver a response to a waiting request.
@@ -157,16 +219,25 @@ class PipeConnection:
             True if response was delivered to a waiting request, False otherwise
         """
         request_id = response.get("request_id")
-        if not request_id:
-            return False
+        msg_type = response.get("type")
+        delivered = False
         
         with self._response_lock:
-            response_queue = self._pending_responses.get(request_id)
-            if response_queue:
-                response_queue.put(response)
-                return True
+            # 1. Try to deliver by request_id
+            if request_id:
+                response_queue = self._pending_responses.get(request_id)
+                if response_queue:
+                    response_queue.put(response)
+                    delivered = True
+            
+            # 2. Try to deliver by message type if not delivered (fallback for end_turn_result)
+            if not delivered and msg_type:
+                response_queue = self._pending_responses.get(msg_type)
+                if response_queue:
+                    response_queue.put(response)
+                    delivered = True
         
-        return False
+        return delivered
 
     def _write(self, data: bytes) -> bool:
         bytes_written = wintypes.DWORD(0)
@@ -218,9 +289,9 @@ class StateProcessor:
         """
         msg_type = state.get("type", "unknown")
         
-        # Handle response messages (player_status_result, units_result, action_result, etc.)
+        # Handle response messages (player_status_result, units_result, action_result, pong, etc.)
         # These need to be delivered to waiting requests
-        if msg_type in ("player_status_result", "units_result", "action_result") or msg_type.endswith("_result"):
+        if msg_type in ("player_status_result", "units_result", "action_result", "pong") or msg_type.endswith("_result"):
             if pipe_conn.deliver_response(state):
                 # Response was delivered to a waiting request
                 return
@@ -245,11 +316,13 @@ class StateProcessor:
         if not hasattr(self, "_message_logger"):
             self._message_logger = GameLogger()
         
-        # Just push everything we get from DLL
-        self._message_logger.log_message(state)
+        # Just push everything we get from DLL (mark as incoming)
+        log_msg = state.copy()
+        log_msg["direction"] = "incoming"
+        self._message_logger.log_message(log_msg)
         
-        # Handle game notifications from DLL (still return early, don't process as state)
-        if msg_type == "game_notification" or msg_type == "notification":
+        # Handle game notifications and trace from DLL (return early, don't process as state)
+        if msg_type in ("game_notification", "notification", "trace"):
             return  # Don't process as a state message
         
         # Validate message
@@ -394,39 +467,51 @@ class NamedPipeServer:
             self._dispatch(data, pipe_conn)
 
     def _dispatch(self, data: bytes, pipe_conn: PipeConnection) -> None:
-        """Dispatch message to handler thread immediately.
+        """Dispatch message(s) to handler thread immediately.
         
+        Handles newline-delimited JSON, potentially multiple messages in one chunk.
         Returns as fast as possible to allow next ReadFile to start.
-        All parsing and processing happens in the handler thread.
         """
-        # Run handler in separate thread so pipe reading can continue immediately
-        # This ensures we never miss messages - next ReadFile starts right away
-        def run_handler():
+        def process_single_message(msg_data: bytes):
             try:
-                # Parse JSON (moved here to keep _dispatch fast)
+                # Parse JSON
                 try:
-                    decoded = data.decode("utf-8").rstrip("\r\n")
+                    decoded = msg_data.decode("utf-8").strip()
+                    if not decoded:
+                        return
                     state = json.loads(decoded)
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    self._log.error(f"Failed to parse message: {e}, raw data: {data[:100]!r}")
+                    self._log.error(f"Failed to parse message: {e}, raw data: {msg_data[:100]!r}")
                     return
 
                 # Log incoming message from DLL
                 msg_type = state.get("type", "unknown") if isinstance(state, dict) else "non-dict"
-                self._log.info(f"📥 Incoming from DLL: {msg_type}: {state}")
+                
+                # Trace messages are logged but not usually processed further
+                if msg_type == "trace":
+                    self._log.debug(f"📥 DLL Trace: {state.get('message', state)}")
+                else:
+                    self._log.info(f"📥 Incoming from DLL: {msg_type}: {state}")
 
-                # Process state (validation, persistence, notifications)
+                # Process state (validation, persistence, notifications, and delivery to waiting sync requests)
                 self.state_processor.process_state(state, self.on_turn_start, pipe_conn)
             except Exception as e:
                 self._log.error(f"Handler error: {e}", exc_info=True)
-            finally:
-                # Clear handler thread reference when done
-                with self._handler_lock:
-                    if self._current_handler_thread == threading.current_thread():
-                        self._current_handler_thread = None
 
-        # Use a placeholder name - we'll update it in the handler if parsing succeeds
-        handler_thread = threading.Thread(target=run_handler, daemon=True, name="TurnHandler-pending")
+        def run_handler_pool():
+            # Split data by newlines in case multiple messages arrived together
+            messages = data.split(b"\n")
+            for msg in messages:
+                if msg.strip():
+                    process_single_message(msg)
+            
+            # Cleanup thread reference
+            with self._handler_lock:
+                if self._current_handler_thread == threading.current_thread():
+                    self._current_handler_thread = None
+
+        # Run handler in separate thread so pipe reading can continue immediately
+        handler_thread = threading.Thread(target=run_handler_pool, daemon=True, name="MsgHandler")
         with self._handler_lock:
             self._current_handler_thread = handler_thread
         handler_thread.start()

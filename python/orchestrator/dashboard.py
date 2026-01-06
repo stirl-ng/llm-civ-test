@@ -484,6 +484,7 @@ DASHBOARD_HTML = """
                 <div class="command-section">
                     <h3>Server</h3>
                     <button class="command-btn" onclick="checkHealth()">Health Check</button>
+                    <button class="command-btn" onclick="pingServer()">Ping</button>
                     <button class="command-btn" onclick="getTools()">List Tools</button>
                 </div>
 
@@ -563,6 +564,29 @@ DASHBOARD_HTML = """
 
             try {
                 const response = await fetch(`${MCP_BASE}/health`);
+                const data = await response.json();
+                resultDiv.className = 'command-result success';
+                resultDiv.textContent = JSON.stringify(data, null, 2);
+                updateStatus(true);
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                updateStatus(false);
+            }
+        }
+
+        async function pingServer() {
+            const resultDiv = document.getElementById('commandResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Pinging...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'ping', arguments: {}})
+                });
                 const data = await response.json();
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
