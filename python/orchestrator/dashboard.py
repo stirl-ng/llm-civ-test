@@ -213,6 +213,35 @@ DASHBOARD_HTML = """
             padding: 1rem;
             height: calc(100vh - 70px);
         }
+        .tabs {
+            display: flex;
+            background: #0f3460;
+            border-bottom: 2px solid #1a4b8c;
+        }
+        .tab {
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            color: #aaa;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .tab:hover {
+            background: #1a4b8c;
+            color: #eee;
+        }
+        .tab.active {
+            background: #16213e;
+            color: #e94560;
+            border-bottom: 2px solid #e94560;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
         .panel {
             background: #16213e;
             border-radius: 8px;
@@ -421,7 +450,7 @@ DASHBOARD_HTML = """
     <div class="container">
         <div class="panel">
             <div class="panel-header">
-                <span>Logs</span>
+                <span>Logs & Messages</span>
                 <div class="auto-refresh">
                     <span>Auto-refresh</span>
                     <label class="toggle-switch">
@@ -430,22 +459,58 @@ DASHBOARD_HTML = """
                     </label>
                 </div>
             </div>
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('python')">Python Logs</button>
+                <button class="tab" onclick="switchTab('messages')">Message Log (JSONL)</button>
+            </div>
             <div class="panel-body">
-                <div class="log-filters">
-                    <select id="levelFilter">
-                        <option value="ALL">All Levels</option>
-                        <option value="DEBUG">DEBUG</option>
-                        <option value="INFO">INFO</option>
-                        <option value="WARNING">WARNING</option>
-                        <option value="ERROR">ERROR</option>
-                    </select>
-                    <input type="text" id="textFilter" placeholder="Search logs...">
-                    <input type="number" id="playerIdFilter" placeholder="Player ID" min="0" style="width: 120px;">
-                    <button onclick="refreshLogs()">Refresh</button>
-                    <button onclick="clearLogs()">Clear</button>
+                <!-- Python Logs Tab -->
+                <div id="pythonTab" class="tab-content active">
+                    <div class="log-filters">
+                        <select id="levelFilter">
+                            <option value="ALL">All Levels</option>
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                        </select>
+                        <input type="text" id="textFilter" placeholder="Search logs...">
+                        <input type="number" id="playerIdFilter" placeholder="Player ID" min="0" style="width: 120px;">
+                        <button onclick="refreshLogs()">Refresh</button>
+                        <button onclick="clearLogs()">Clear</button>
+                    </div>
+                    <div id="logContainer">
+                        <div class="empty-state">Loading logs...</div>
+                    </div>
                 </div>
-                <div id="logContainer">
-                    <div class="empty-state">Loading logs...</div>
+                
+                <!-- Message Log Tab -->
+                <div id="messagesTab" class="tab-content">
+                    <div class="log-filters">
+                        <select id="messageTypeFilter">
+                            <option value="">All Types</option>
+                            <option value="turn_start">Turn Start</option>
+                            <option value="notification">Notification</option>
+                            <option value="action_result">Action Result</option>
+                            <option value="tool_call">Tool Call</option>
+                            <option value="tool_result_get_notifications">Tool Result</option>
+                        </select>
+                        <select id="directionFilter">
+                            <option value="">All Directions</option>
+                            <option value="incoming">Incoming</option>
+                            <option value="outgoing">Outgoing</option>
+                            <option value="from_llm">From LLM</option>
+                            <option value="to_llm">To LLM</option>
+                        </select>
+                        <input type="number" id="messageTurnFilter" placeholder="Min Turn" min="0" style="width: 120px;">
+                        <input type="number" id="messagePlayerFilter" placeholder="Player ID" min="0" style="width: 120px;">
+                        <input type="number" id="messageLimit" placeholder="Limit" value="100" min="1" max="1000" style="width: 100px;">
+                        <button onclick="refreshMessages()">Refresh</button>
+                        <button onclick="clearMessages()">Clear</button>
+                    </div>
+                    <div id="messageContainer">
+                        <div class="empty-state">Loading messages...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -632,7 +697,14 @@ DASHBOARD_HTML = """
 
             checkbox.addEventListener('change', () => {
                 if (checkbox.checked) {
-                    refreshInterval = setInterval(refreshLogs, 2000);
+                    refreshInterval = setInterval(() => {
+                        const activeTab = document.querySelector('.tab-content.active');
+                        if (activeTab && activeTab.id === 'pythonTab') {
+                            refreshLogs();
+                        } else if (activeTab && activeTab.id === 'messagesTab') {
+                            refreshMessages();
+                        }
+                    }, 2000);
                 } else {
                     clearInterval(refreshInterval);
                 }
@@ -640,7 +712,14 @@ DASHBOARD_HTML = """
 
             // Start auto-refresh
             if (checkbox.checked) {
-                refreshInterval = setInterval(refreshLogs, 2000);
+                refreshInterval = setInterval(() => {
+                    const activeTab = document.querySelector('.tab-content.active');
+                    if (activeTab && activeTab.id === 'pythonTab') {
+                        refreshLogs();
+                    } else if (activeTab && activeTab.id === 'messagesTab') {
+                        refreshMessages();
+                    }
+                }, 2000);
             }
         }
 
@@ -648,6 +727,75 @@ DASHBOARD_HTML = """
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Tab switching
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            if (tabName === 'python') {
+                document.getElementById('pythonTab').classList.add('active');
+            } else {
+                document.getElementById('messagesTab').classList.add('active');
+                refreshMessages();
+            }
+        }
+
+        // Message log management
+        async function refreshMessages() {
+            const type = document.getElementById('messageTypeFilter').value;
+            const direction = document.getElementById('directionFilter').value;
+            const minTurn = document.getElementById('messageTurnFilter').value;
+            const playerId = document.getElementById('messagePlayerFilter').value;
+            const limit = document.getElementById('messageLimit').value || 100;
+
+            try {
+                const params = new URLSearchParams();
+                if (type) params.set('type', type);
+                if (direction) params.set('direction', direction);
+                if (minTurn) params.set('min_turn', minTurn);
+                if (playerId) params.set('player_id', playerId);
+                params.set('limit', limit);
+
+                const response = await fetch(`${DASHBOARD_BASE}/api/messages?${params}`);
+                const data = await response.json();
+
+                const container = document.getElementById('messageContainer');
+                if (data.messages.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No messages matching filter</div>';
+                    return;
+                }
+
+                container.innerHTML = data.messages.map(msg => {
+                    const timestamp = msg.timestamp ? new Date(msg.timestamp * 1000).toISOString() : 'N/A';
+                    const direction = msg.direction || 'unknown';
+                    const type = msg.type || 'unknown';
+                    const jsonStr = JSON.stringify(msg, null, 2);
+                    
+                    return `
+                        <div class="log-entry">
+                            <span class="timestamp">${timestamp}</span>
+                            <span class="level ${direction}">${direction}</span>
+                            <span class="level" style="background: #6b7280; margin-left: 0.5rem;">${type}</span>
+                            <details style="margin-top: 0.5rem;">
+                                <summary style="cursor: pointer; color: #4ade80;">View JSON</summary>
+                                <pre style="background: #0f3460; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;">${escapeHtml(jsonStr)}</pre>
+                            </details>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to fetch messages:', e);
+                document.getElementById('messageContainer').innerHTML = '<div class="empty-state">Error loading messages</div>';
+            }
+        }
+
+        function clearMessages() {
+            document.getElementById('messageContainer').innerHTML = '<div class="empty-state">Messages cleared</div>';
         }
 
         // Initialize
@@ -663,6 +811,16 @@ DASHBOARD_HTML = """
 
             // Filter on level change
             document.getElementById('levelFilter').addEventListener('change', refreshLogs);
+            
+            // Message filter handlers
+            document.getElementById('messageTypeFilter').addEventListener('change', refreshMessages);
+            document.getElementById('directionFilter').addEventListener('change', refreshMessages);
+            document.getElementById('messageTurnFilter').addEventListener('keyup', (e) => {
+                if (e.key === 'Enter') refreshMessages();
+            });
+            document.getElementById('messagePlayerFilter').addEventListener('keyup', (e) => {
+                if (e.key === 'Enter') refreshMessages();
+            });
         });
     </script>
 </body>
@@ -721,6 +879,47 @@ def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
     @app.route("/api/tools")
     def api_tools():
         return jsonify({"tools": AVAILABLE_TOOLS})
+
+    @app.route("/api/messages")
+    def api_messages():
+        """Get messages from JSONL log with optional filters."""
+        from .game_logger import GameLogger
+        
+        message_type = request.args.get("type")
+        direction = request.args.get("direction")
+        min_turn = request.args.get("min_turn", type=int)
+        player_id = request.args.get("player_id", type=int)
+        limit = int(request.args.get("limit", 100))
+        
+        # Cap limit at 1000
+        limit = min(limit, 1000)
+        
+        # Get messages from logger
+        game_logger = GameLogger()
+        messages = game_logger.get_messages(
+            message_type=message_type,
+            min_turn=min_turn,
+            player_id=player_id
+        )
+        
+        # Filter by direction if specified
+        if direction:
+            messages = [msg for msg in messages if msg.get("direction") == direction]
+        
+        # Return most recent messages first, limited
+        messages = list(reversed(messages))[:limit]
+        
+        return jsonify({
+            "messages": messages,
+            "count": len(messages),
+            "filters": {
+                "type": message_type,
+                "direction": direction,
+                "min_turn": min_turn,
+                "player_id": player_id,
+                "limit": limit
+            }
+        })
 
     return app
 

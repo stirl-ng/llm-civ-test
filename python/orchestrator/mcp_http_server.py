@@ -114,11 +114,29 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_error(400, "Missing 'tool' field")
             return
 
+        # Note: Tool call logging is handled in mcp_server.execute_tool()
+        # to ensure it happens before execution and includes turn context
         try:
             result = self.mcp_server.execute_tool(tool_name, arguments)
             self._send_json({"status": "success", "result": result})
         except Exception as e:
             logger.error(f"Tool execution error: {e}", exc_info=True)
+            # Log error result to LLM
+            from .game_logger import GameLogger
+            from datetime import datetime
+            error_log = {
+                "type": f"tool_result_{tool_name}",
+                "direction": "to_llm",
+                "timestamp": datetime.now().timestamp(),
+                "tool": tool_name,
+                "result": {"error": str(e), "status": "error"}
+            }
+            # Add turn if available
+            if self.mcp_server.turn_number is not None:
+                error_log["turn"] = self.mcp_server.turn_number
+            game_logger = GameLogger()
+            game_logger.log_message(error_log)
+            
             self._send_json({"status": "error", "error": str(e)}, status=500)
 
     def _send_json(self, data: dict, status: int = 200):
