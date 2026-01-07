@@ -108,9 +108,15 @@ AVAILABLE_TOOLS = [
         "parameters": [],
     },
     {
-        "name": "acknowledge_notification",
-        "description": "Mark a notification as acknowledged by its lookup_index (use the lookup_index field from get_notifications).",
-        "parameters": ["notification_id"],
+        "name": "get_message_history",
+        "description": "Get message history from the log with optional filters. Returns messages in the same format as they appear in the log.",
+        "parameters": {
+            "message_type": "optional string (e.g., 'turn_start', 'notification', 'action_result')",
+            "direction": "optional string: 'incoming'|'outgoing'",
+            "min_turn": "optional int",
+            "player_id": "optional int",
+            "limit": "optional int (default 100, max 1000)"
+        },
     },
     {
         "name": "get_player_status",
@@ -313,10 +319,44 @@ class CivMCPServer:
             logger.warning(f"❌ TOOL ERROR: {name}: {result}")
         else:
             logger.info(f"✅ TOOL RESULT: {name}: {result}")
+    
+    def _log_tool_result_to_llm(self, name: str, result: dict[str, Any]) -> None:
+        """Log tool result sent to LLM to JSONL file.
+        
+        This ensures parity between what's logged and what the LLM receives.
+        """
+        from datetime import datetime
+        tool_result_log = {
+            "type": f"tool_result_{name}",
+            "direction": "to_llm",
+            "timestamp": datetime.now().timestamp(),
+            "tool": name,
+            "result": result
+        }
+        # Add turn if available
+        with self._lock:
+            if self._current_turn_number is not None:
+                tool_result_log["turn"] = self._current_turn_number
+        self._message_logger.log_message(tool_result_log)
 
     def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a tool and return results."""
         self._log_tool_call(name, arguments)
+        
+        # Log tool call from LLM to JSONL
+        from datetime import datetime
+        tool_call_log = {
+            "type": "tool_call",
+            "direction": "from_llm",
+            "timestamp": datetime.now().timestamp(),
+            "tool": name,
+            "arguments": arguments
+        }
+        # Add turn if available
+        with self._lock:
+            if self._current_turn_number is not None:
+                tool_call_log["turn"] = self._current_turn_number
+        self._message_logger.log_message(tool_call_log)
 
         # Query tools - return dummy responses (will be replaced with DLL calls later)
         query_tools = {
@@ -331,42 +371,51 @@ class CivMCPServer:
             "get_victory_progress": lambda: self._get_victory_progress_dummy(),
             "get_resources": lambda: self._get_resources_dummy(),
             "get_state_refresh": lambda: self._get_state_refresh_dummy(),
-            "get_notifications": lambda: self._get_notifications_dummy(),
+            "get_notifications": lambda: self._get_notifications(),
+            "get_message_history": lambda: self._get_message_history(
+                message_type=arguments.get("message_type"),
+                direction=arguments.get("direction"),
+                min_turn=arguments.get("min_turn"),
+                player_id=arguments.get("player_id"),
+                limit=arguments.get("limit", 100)
+            ),
         }
 
         if name in query_tools:
             result = query_tools[name]()
             self._log_tool_result(name, result, is_error="error" in result)
+            # Log tool result to LLM
+            self._log_tool_result_to_llm(name, result)
             return result
 
         # Action tools
         if name == "send_action":
             action = arguments.get("action")
             if action is None:
-                return {"error": "Missing required parameter 'action'"}
+                error = {"error": "Missing required parameter 'action'"}
+                self._log_tool_result_to_llm(name, error)
+                return error
             if not isinstance(action, dict):
-                return {"error": f"Parameter 'action' must be a dictionary, got {type(action).__name__}"}
-            return self._send_action(action=action)
+                error = {"error": f"Parameter 'action' must be a dictionary, got {type(action).__name__}"}
+                self._log_tool_result_to_llm(name, error)
+                return error
+            result = self._send_action(action=action)
+            # send_action already logs its result (action_result from DLL), but log the tool result too
+            self._log_tool_result_to_llm(name, result)
+            return result
 
         # Turn control
         if name == "end_turn":
-            return self._end_turn(notes=arguments.get("notes", ""))
-
-        # Tools with validation
-        if name == "acknowledge_notification":
-            notification_id = arguments.get("notification_id")
-            if notification_id is None:
-                error = {"error": "Missing required parameter 'notification_id'"}
-                self._log_tool_result(name, error, is_error=True)
-                return error
-            result = self._acknowledge_notification_dummy(notification_id)
-            self._log_tool_result(name, result, is_error="error" in result)
+            result = self._end_turn(notes=arguments.get("notes", ""))
+            # end_turn already logs to JSONL, but also log as tool result
+            self._log_tool_result_to_llm(name, result)
             return result
 
         if name == "get_player_status":
             player_id = arguments.get("player_id")
             result = self._get_player_status_dummy(player_id=player_id)
             self._log_tool_result(name, result, is_error="error" in result)
+            self._log_tool_result_to_llm(name, result)
             return result
 
         if name == "send_action_with_confirmation":
@@ -383,11 +432,13 @@ class CivMCPServer:
                 query_type=query_type
             )
             self._log_tool_result(name, result, is_error="error" in result)
+            self._log_tool_result_to_llm(name, result)
             return result
 
         if name == "ping":
             result = self._ping()
             self._log_tool_result(name, result, is_error="error" in result)
+            self._log_tool_result_to_llm(name, result)
             return result
 
         # Unknown tool
@@ -587,19 +638,76 @@ class CivMCPServer:
         """Dummy response - will be replaced with DLL call."""
         return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
-    def _get_notifications_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"notifications": [], "count": 0, "message": "Dummy response - will query DLL directly"}
-
-    def _acknowledge_notification_dummy(self, notification_id: int) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        if not isinstance(notification_id, int):
-            return {"error": f"notification_id must be an integer, got {type(notification_id).__name__}"}
-        return {"status": "acknowledged", "lookup_index": notification_id, "message": "Dummy response - will send to DLL"}
+    def _get_notifications(self) -> dict[str, Any]:
+        """Get unacknowledged notifications from the log.
+        
+        Returns notifications in the same format as they appear in the log,
+        ensuring parity between what's logged and what the LLM receives.
+        """
+        notifications = self._message_logger.get_messages(
+            message_type="notification",
+            unacknowledged_only=True
+        )
+        return {
+            "notifications": notifications,  # Same format as log entries
+            "count": len(notifications)
+        }
 
     def _get_player_status_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
         """Dummy response - will be replaced with DLL call."""
         return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    
+    def _get_message_history(
+        self,
+        message_type: Optional[str] = None,
+        direction: Optional[str] = None,
+        min_turn: Optional[int] = None,
+        player_id: Optional[int] = None,
+        limit: int = 100
+    ) -> dict[str, Any]:
+        """Get message history from the log with optional filters.
+        
+        Returns messages in the same format as they appear in the log,
+        ensuring parity between what's logged and what the LLM receives.
+        
+        Args:
+            message_type: Optional message type to filter by
+            direction: Optional direction filter ('incoming' or 'outgoing')
+            min_turn: Optional minimum turn number
+            player_id: Optional player ID filter
+            limit: Maximum number of messages to return (default 100, max 1000)
+        
+        Returns:
+            Dictionary with 'messages' list and 'count'
+        """
+        # Cap limit at 1000 to prevent excessive memory usage
+        limit = min(limit, 1000)
+        
+        # Get messages from logger
+        messages = self._message_logger.get_messages(
+            message_type=message_type,
+            min_turn=min_turn,
+            player_id=player_id
+        )
+        
+        # Filter by direction if specified
+        if direction:
+            messages = [msg for msg in messages if msg.get("direction") == direction]
+        
+        # Return most recent messages first, limited
+        messages = list(reversed(messages))[:limit]
+        
+        return {
+            "messages": messages,
+            "count": len(messages),
+            "filters": {
+                "message_type": message_type,
+                "direction": direction,
+                "min_turn": min_turn,
+                "player_id": player_id,
+                "limit": limit
+            }
+        }
     
     def _send_action_with_confirmation(
         self,
