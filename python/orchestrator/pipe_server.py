@@ -5,6 +5,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import uuid
 from ctypes import wintypes
 from typing import Any, Callable, Optional
@@ -67,6 +68,10 @@ class WinAPI:
     FlushFileBuffers = kernel32.FlushFileBuffers
     FlushFileBuffers.argtypes = [wintypes.HANDLE]
     FlushFileBuffers.restype = wintypes.BOOL
+
+    PeekNamedPipe = kernel32.PeekNamedPipe
+    PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+    PeekNamedPipe.restype = wintypes.BOOL
 
     DisconnectNamedPipe = kernel32.DisconnectNamedPipe
     DisconnectNamedPipe.argtypes = [wintypes.HANDLE]
@@ -246,6 +251,8 @@ class PipeConnection:
             err = ctypes.get_last_error()
             self._log.error(f"Pipe write failed: {err}")
             return False
+        # Flush to ensure data is actually transmitted to the client
+        WinAPI.FlushFileBuffers(self._handle)
         return True
 
     def _read(self) -> Optional[bytes]:
@@ -446,10 +453,24 @@ class NamedPipeServer:
     def _client_loop(self, h: int) -> None:
         buf = (ctypes.c_char * WinAPI.BUFSIZE)()
         bytes_read = wintypes.DWORD(0)
+        bytes_avail = wintypes.DWORD(0)
         pipe_conn = PipeConnection(h)
 
         while self._running:
-            # Wait for message from DLL (turn_start)
+            # Non-blocking peek to check if data is available
+            # This allows writes from other threads to proceed without blocking
+            if not WinAPI.PeekNamedPipe(h, None, 0, None, ctypes.byref(bytes_avail), None):
+                err = ctypes.get_last_error()
+                self._log.info(f"Client disconnected or peek error: {err}")
+                break
+
+            if bytes_avail.value == 0:
+                # No data available, sleep briefly and try again
+                # This keeps the loop responsive to writes from HTTP thread
+                time.sleep(0.01)  # 10ms polling interval
+                continue
+
+            # Data available, now read it
             ok = WinAPI.ReadFile(h, buf, WinAPI.BUFSIZE, ctypes.byref(bytes_read), None)
             if not ok:
                 err = ctypes.get_last_error()
