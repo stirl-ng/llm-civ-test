@@ -541,7 +541,7 @@ DASHBOARD_HTML = """
 
                 <div class="command-section">
                     <h3>Actions</h3>
-                    <button class="command-btn action" onclick="runCommand('end_turn')">End Turn</button>
+                    <button class="command-btn action" onclick="endTurn()">End Turn</button>
                 </div>
 
                 <div class="command-section">
@@ -615,6 +615,33 @@ DASHBOARD_HTML = """
                 const data = await response.json();
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+            }
+        }
+
+        // End turn with current turn number
+        async function endTurn() {
+            const resultDiv = document.getElementById('commandResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Getting current turn...';
+
+            try {
+                // First, get the current turn number from session
+                const sessionResponse = await fetch('/api/session');
+                const sessionData = await sessionResponse.json();
+                
+                if (!sessionData.turn_number) {
+                    resultDiv.className = 'command-result error';
+                    resultDiv.textContent = 'Error: No active turn. Make sure the game is running and a turn has started.';
+                    return;
+                }
+
+                // Now call end_turn with the current turn number
+                resultDiv.textContent = `Ending turn ${sessionData.turn_number}...`;
+                await runCommand('end_turn', {turn: sessionData.turn_number});
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
