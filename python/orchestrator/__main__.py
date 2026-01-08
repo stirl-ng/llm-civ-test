@@ -101,20 +101,12 @@ def run_mcp_mode(
     print(f"[orchestrator] Waiting for DLL to connect...", file=sys.stderr)
 
     def on_turn_start(state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
-        """Called when DLL sends turn_start. Blocks until LLM calls end_turn."""
+        """Called when DLL sends turn_start. Updates state and returns immediately."""
         turn_num = state.get("turn", "?")
-        print(f"[orchestrator] Turn {turn_num}: received state, waiting for LLM...", file=sys.stderr)
+        print(f"[orchestrator] Turn {turn_num}: received state", file=sys.stderr)
 
-        # Start turn - expose state and pipe connection to MCP server
+        # Update turn state - expose pipe connection to MCP server
         mcp_server.mcp_server.start_turn(state, pipe_conn)
-
-        # Wait for LLM to call end_turn (blocks here)
-        ended_normally = mcp_server.mcp_server.wait_for_turn_end()
-
-        if not ended_normally:
-            print(f"[orchestrator] Turn {turn_num}: TIMEOUT", file=sys.stderr)
-        else:
-            print(f"[orchestrator] Turn {turn_num}: completed", file=sys.stderr)
 
     # Create pipe server and run in background thread
     pipe_server = NamedPipeServer(

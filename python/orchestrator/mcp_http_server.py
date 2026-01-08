@@ -126,7 +126,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             from datetime import datetime
             error_log = {
                 "type": f"tool_result_{tool_name}",
-                "direction": "to_llm",
+                "direction": "incoming",
                 "timestamp": datetime.now().timestamp(),
                 "tool": tool_name,
                 "result": {"error": str(e), "status": "error"}

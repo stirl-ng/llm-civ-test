@@ -499,8 +499,6 @@ DASHBOARD_HTML = """
                             <option value="">All Directions</option>
                             <option value="incoming">Incoming</option>
                             <option value="outgoing">Outgoing</option>
-                            <option value="from_llm">From LLM</option>
-                            <option value="to_llm">To LLM</option>
                         </select>
                         <input type="number" id="messageTurnFilter" placeholder="Min Turn" min="0" style="width: 120px;">
                         <input type="number" id="messagePlayerFilter" placeholder="Player ID" min="0" style="width: 120px;">

@@ -100,7 +100,7 @@ AVAILABLE_TOOLS = [
     {
         "name": "end_turn",
         "description": "Signal that you are done with your turn.",
-        "parameters": ["notes"],
+        "parameters": {"notes": "optional string", "turn": "optional int"},
     },
     {
         "name": "get_notifications",
@@ -164,15 +164,12 @@ class CivMCPServer:
         self.turn_timeout = turn_timeout
         self._state_processor = state_processor
 
-        # Pipe connection for sending actions (set during turn)
-        self._pipe_conn: Optional["PipeConnection"] = None
-
         # Turn management
-        self._turn_active = False
-        self._turn_ended = threading.Event()
+        self._pipe_conn: Optional["PipeConnection"] = None
         self._turn_notes: str = ""
         self._current_turn_number: Optional[int] = None  # Track which turn is active
         self._first_turn_of_game: Optional[int] = None  # Track first turn of current game session
+        self._end_turn_in_progress = False  # Track if an end_turn request is currently being processed
         self._lock = threading.Lock()
         
         # Action statistics
@@ -185,9 +182,7 @@ class CivMCPServer:
         self._message_logger = GameLogger()
 
     def start_turn(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
-        """Start a new turn with the given game state and pipe connection.
-
-        If a turn is already active, it will be cancelled (e.g., user manually advanced turn).
+        """Update turn state with the given game state and pipe connection.
 
         Args:
             state: Game state from DLL (not cached, just used for turn number)
@@ -208,33 +203,10 @@ class CivMCPServer:
                     logger.info(f"New game detected (turn {new_turn_num} < previous first turn {self._first_turn_of_game})")
                     self._first_turn_of_game = new_turn_num
             
-            # If there's an active turn, cancel it (new turn_start arrived)
-            if self._turn_active:
-                old_turn = self._current_turn_number
-                if new_turn_num is not None and old_turn is not None:
-                    if new_turn_num > old_turn:
-                        logger.warning(f"New turn_start received (turn {new_turn_num}) while turn {old_turn} was active - cancelling previous turn")
-                        # Set event to cancel old turn's wait, but don't clear it yet
-                        # The old turn's wait_for_turn_end() will see it and return
-                        self._turn_ended.set()
-                    elif new_turn_num < old_turn:
-                        logger.warning(f"New turn_start received (turn {new_turn_num}) while turn {old_turn} was active - ignoring (turn already advanced)")
-                        return
-                    else:
-                        logger.warning(f"New turn_start received (turn {new_turn_num}) while turn {old_turn} was active - ignoring (same turn)")
-                        return
-                else:
-                    # Can't compare turn numbers, cancel anyway
-                    logger.warning(f"New turn_start received while another turn was active - cancelling previous turn")
-                    self._turn_ended.set()
-            
-            # Now set up the new turn
+            # Update turn state
             self._pipe_conn = pipe_conn
-            self._turn_notes = ""
-            # Clear the event for the new turn (old turn should have seen it by now)
-            self._turn_ended.clear()
-            self._turn_active = True
             self._current_turn_number = new_turn_num
+            self._end_turn_in_progress = False  # Reset end_turn flag for new turn
             # Reset action statistics for new turn
             self._action_count = 0
             self._action_errors = 0
@@ -242,38 +214,8 @@ class CivMCPServer:
 
         turn_num = state.get("turn", "?")
         player_id = state.get("player_id", "?")
-        # logger.info(f"🎮 TURN {turn_num} STARTED (Player {player_id})\nWaiting for LLM decisions...")
+        logger.debug(f"Turn {turn_num} state updated (Player {player_id})")
 
-    def wait_for_turn_end(self, timeout: Optional[float] = None) -> bool:
-        """Block until LLM calls end_turn or timeout expires.
-
-        Args:
-            timeout: Max seconds to wait (uses self.turn_timeout if None)
-
-        Returns:
-            True if turn ended normally, False if timed out
-        """
-        # Remember which turn we're waiting for
-        with self._lock:
-            waiting_for_turn = self._current_turn_number
-        
-        wait_time = timeout if timeout is not None else self.turn_timeout
-        ended = self._turn_ended.wait(timeout=wait_time)
-
-        # Only deactivate if this is still the active turn (not superseded by a new turn)
-        with self._lock:
-            if self._current_turn_number == waiting_for_turn:
-                self._turn_active = False
-                self._pipe_conn = None
-                self._current_turn_number = None
-            else:
-                # A new turn started while we were waiting, so don't deactivate
-                logger.debug(f"Turn {waiting_for_turn} wait ended, but new turn {self._current_turn_number} is active - not deactivating")
-
-        if not ended:
-            logger.warning(f"Turn timed out after {wait_time}s")
-
-        return ended
 
     def get_turn_notes(self) -> str:
         """Get notes from the completed turn."""
@@ -282,9 +224,9 @@ class CivMCPServer:
     
     @property
     def turn_active(self) -> bool:
-        """Check if a turn is currently active."""
+        """Check if we have an active pipe connection."""
         with self._lock:
-            return self._turn_active
+            return self._pipe_conn is not None
     
     @property
     def turn_number(self) -> Optional[int]:
@@ -348,7 +290,7 @@ class CivMCPServer:
         from datetime import datetime
         tool_result_log = {
             "type": f"tool_result_{name}",
-            "direction": "to_llm",
+            "direction": "incoming",
             "timestamp": datetime.now().timestamp(),
             "tool": name,
             "result": result
@@ -367,7 +309,7 @@ class CivMCPServer:
         from datetime import datetime
         tool_call_log = {
             "type": "tool_call",
-            "direction": "from_llm",
+            "direction": "outgoing",
             "timestamp": datetime.now().timestamp(),
             "tool": name,
             "arguments": arguments
@@ -429,7 +371,9 @@ class CivMCPServer:
 
         # Turn control
         if name == "end_turn":
-            result = self._end_turn(notes=arguments.get("notes", ""))
+            notes = arguments.get("notes", "")
+            turn = arguments.get("turn")
+            result = self._end_turn(notes=notes, turn=turn)
             # end_turn already logs to JSONL, but also log as tool result
             self._log_tool_result_to_llm(name, result)
             return result
@@ -487,11 +431,13 @@ class CivMCPServer:
             return {"error": error_msg, "action": action}
         
         with self._lock:
-            if not self._turn_active:
-                self._action_errors += 1
-                return {"error": "Cannot send action - no active turn"}
             pipe_conn = self._pipe_conn
             current_turn = self._current_turn_number
+        
+        if not pipe_conn:
+            with self._lock:
+                self._action_errors += 1
+            return {"error": "Cannot send action - no pipe connection available"}
 
         if not pipe_conn:
             with self._lock:
@@ -542,54 +488,70 @@ class CivMCPServer:
             logger.error(f"Exception sending action: {e}", exc_info=True)
             return {"error": f"Failed to send action: {e}"}
 
-    def _end_turn(self, notes: str = "") -> dict[str, Any]:
+    def _end_turn(self, notes: str = "", turn: Optional[int] = None) -> dict[str, Any]:
         """Signal that the LLM is done with its turn and wait for DLL confirmation.
         
         The DLL might block the end-turn request if there are pending units, 
         tech choices, etc. This method waits for the authoritative result.
+        
+        Args:
+            notes: Optional notes string to attach to the turn
+            turn: Optional turn number. If provided, will be validated against current turn.
         """
         with self._lock:
-            if not self._turn_active:
-                return {"error": "No active turn to end", "status": "error"}
+            if self._end_turn_in_progress:
+                return {"error": "An end_turn request is already in progress", "status": "error"}
+            # Mark that we're processing an end_turn to prevent concurrent calls
+            self._end_turn_in_progress = True
             pipe_conn = self._pipe_conn
             current_turn = self._current_turn_number
 
         if not pipe_conn:
-            return {"error": "No pipe connection available"}
+            with self._lock:
+                self._end_turn_in_progress = False
+            return {"error": "No pipe connection available", "status": "error"}
 
-        logger.info(f"LLM requesting end_turn (turn {current_turn})")
+        # Use provided turn if given, otherwise use current turn
+        turn_to_use = turn if turn is not None else current_turn
+        
+        # Validate turn if provided
+        if turn is not None and current_turn is not None and turn != current_turn:
+            logger.warning(f"LLM requested end_turn for turn {turn}, but current turn is {current_turn}")
+
+        logger.info(f"LLM requesting end_turn (turn {turn_to_use})")
 
         # Log outgoing end_turn message to JSONL
         end_turn_msg = {"type": "end_turn", "request_id": str(uuid.uuid4()), "direction": "outgoing"}
-        if current_turn is not None:
-            end_turn_msg["turn"] = current_turn
+        if turn_to_use is not None:
+            end_turn_msg["turn"] = turn_to_use
         self._message_logger.log_message(end_turn_msg)
 
         # Send end_turn to DLL and wait for end_turn_result
         try:
-            result = pipe_conn.send_end_turn(turn=current_turn, timeout=15.0)
+            result = pipe_conn.send_end_turn(turn=turn_to_use, timeout=15.0)
             
             status = result.get("status", "unknown")
             
             if status == "success":
-                # Only signal orchestrator that turn is done if DLL confirms success
+                # DLL confirmed turn ended successfully
                 with self._lock:
                     self._turn_notes = notes
-                    self._turn_active = False # Transition out of active state
+                    self._end_turn_in_progress = False
                 
-                self._turn_ended.set()
-                
-                turn_info = f"Turn {current_turn}" if current_turn is not None else "Turn ?"
+                turn_info = f"Turn {turn_to_use}" if turn_to_use is not None else "Turn ?"
                 logger.info(f"✅ {turn_info} ended successfully (confirmed by DLL)")
                 return {
                     "status": "success",
-                    "turn": current_turn,
+                    "turn": turn_to_use,
                     "message": "Turn ended successfully"
                 }
             
             elif status == "blocked":
                 blocker = result.get("blocker", "unknown")
                 logger.warning(f"❌ End turn blocked by: {blocker}")
+                # Clear the in-progress flag so LLM can try again after resolving blocker
+                with self._lock:
+                    self._end_turn_in_progress = False
                 return {
                     "status": "blocked",
                     "blocker": blocker,
@@ -599,8 +561,7 @@ class CivMCPServer:
             elif status == "already_ended":
                 logger.info("End turn requested but turn already ended")
                 with self._lock:
-                    self._turn_active = False
-                self._turn_ended.set()
+                    self._end_turn_in_progress = False
                 return {
                     "status": "already_ended",
                     "message": "Turn has already been ended"
@@ -608,6 +569,8 @@ class CivMCPServer:
             
             elif status == "timeout":
                 logger.error("Timeout waiting for end_turn_result from DLL")
+                with self._lock:
+                    self._end_turn_in_progress = False
                 return {
                     "status": "timeout",
                     "error": "DLL did not respond to end_turn request in time"
@@ -615,6 +578,8 @@ class CivMCPServer:
             
             else:
                 logger.error(f"Unexpected end_turn status: {status}")
+                with self._lock:
+                    self._end_turn_in_progress = False
                 return {
                     "status": "error",
                     "error": f"DLL returned unexpected status: {status}",
@@ -623,6 +588,8 @@ class CivMCPServer:
                 
         except Exception as e:
             logger.error(f"Exception during end_turn: {e}", exc_info=True)
+            with self._lock:
+                self._end_turn_in_progress = False
             return {"error": f"Failed to end turn: {e}"}
 
     def _get_game_state_dummy(self, category: Optional[str] = None) -> dict[str, Any]:
@@ -819,16 +786,16 @@ class CivMCPServer:
             Dictionary with DLL response (pong), server status, timestamp, and turn information
         """
         with self._lock:
-            if not self._turn_active:
-                return {
-                    "error": "Cannot ping - no active turn (no pipe connection available)",
-                    "status": "error"
-                }
             pipe_conn = self._pipe_conn
-            turn_active = self._turn_active
             turn_number = self._current_turn_number
             action_count = self._action_count
             action_errors = self._action_errors
+        
+        if not pipe_conn:
+            return {
+                "error": "Cannot ping - no pipe connection available",
+                "status": "error"
+            }
         
         if not pipe_conn:
             return {
@@ -859,7 +826,6 @@ class CivMCPServer:
                     "server": "civ5-mcp",
                     "dll_response": "pong",
                     "timestamp": time.time(),
-                    "turn_active": turn_active,
                     "turn_number": turn_number,
                     "action_count": action_count,
                     "action_errors": action_errors,
@@ -872,7 +838,6 @@ class CivMCPServer:
                     "error": result.get("error"),
                     "message": "Failed to ping DLL",
                     "timestamp": time.time(),
-                    "turn_active": turn_active,
                     "turn_number": turn_number
                 }
             else:
@@ -881,7 +846,6 @@ class CivMCPServer:
                     "dll_response": result,
                     "message": "Received unexpected response from DLL",
                     "timestamp": time.time(),
-                    "turn_active": turn_active,
                     "turn_number": turn_number
                 }
         except Exception as e:
@@ -890,7 +854,6 @@ class CivMCPServer:
                 "status": "error",
                 "error": f"Failed to ping DLL: {e}",
                 "timestamp": time.time(),
-                "turn_active": turn_active,
                 "turn_number": turn_number
             }
     

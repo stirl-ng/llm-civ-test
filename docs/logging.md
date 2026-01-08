@@ -68,13 +68,13 @@ Currently there's no parity between what gets logged, what the LLM receives, and
 │    (from DLL)   │     (direction: "incoming")
 │                 │
 │ 2. Log tool call│───► dll_messages.jsonl
-│    (from LLM)   │     (direction: "from_llm")
+│    (from LLM)   │     (direction: "outgoing")
 │                 │
 │ 3. Query log    │◄─── get_notifications()
 │    for response │     get_message_history()
 │                 │
 │ 4. Log result   │───► dll_messages.jsonl
-│    (to LLM)     │     (direction: "to_llm")
+│    (to LLM)     │     (direction: "incoming")
 │                 │
 │ 5. Log outgoing │───► dll_messages.jsonl
 │    (to DLL)     │     (direction: "outgoing")
@@ -109,7 +109,7 @@ All messages follow this format:
 {
   "timestamp": 1234567890.123,
   "type": "turn_start|notification|action_result|tool_call|...",
-  "direction": "incoming|outgoing|from_llm|to_llm",
+  "direction": "incoming|outgoing",
   "turn": 42,
   "player_id": 0,
   ...type-specific fields...
@@ -120,10 +120,8 @@ All messages follow this format:
 
 | Direction | Meaning |
 |-----------|---------|
-| `incoming` | DLL → Orchestrator |
-| `outgoing` | Orchestrator → DLL |
-| `from_llm` | LLM → Orchestrator (tool calls) |
-| `to_llm` | Orchestrator → LLM (tool results) |
+| `incoming` | DLL → Orchestrator, Orchestrator → LLM (tool results) |
+| `outgoing` | Orchestrator → DLL, LLM → Orchestrator (tool calls) |
 
 ### Examples
 
@@ -144,7 +142,7 @@ All messages follow this format:
 ```json
 {
   "type": "tool_call",
-  "direction": "from_llm",
+  "direction": "outgoing",
   "timestamp": 1234567890.123,
   "tool": "get_notifications",
   "arguments": {}
@@ -155,7 +153,7 @@ All messages follow this format:
 ```json
 {
   "type": "tool_result",
-  "direction": "to_llm",
+  "direction": "incoming",
   "timestamp": 1234567890.124,
   "tool": "get_notifications",
   "result": {
@@ -189,8 +187,8 @@ All messages follow this format:
 | `mcp_server.py:_ping()` | Ping messages | `outgoing` |
 
 **Missing:**
-- Tool calls from LLM (`from_llm`)
-- Tool results to LLM (`to_llm`)
+- Tool calls from LLM (`outgoing`)
+- Tool results to LLM (`incoming`)
 
 ---
 
@@ -235,7 +233,7 @@ Log incoming tool calls:
 def _handle_tool_call(self, request: dict):
     self._message_logger.log_message({
         "type": "tool_call",
-        "direction": "from_llm",
+        "direction": "outgoing",
         "timestamp": time.time(),
         "tool": request.get("tool"),
         "arguments": request.get("arguments", {})
@@ -249,7 +247,7 @@ def execute_tool(self, name: str, arguments: dict) -> dict:
 
     self._message_logger.log_message({
         "type": "tool_result",
-        "direction": "to_llm",
+        "direction": "incoming",
         "timestamp": time.time(),
         "tool": name,
         "result": result
