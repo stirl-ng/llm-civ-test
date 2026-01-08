@@ -18,20 +18,20 @@ class GameLogger:
     to JSONL files for later querying and analysis.
     """
 
-    def __init__(self, messages_file: str = "dll_messages.jsonl", acknowledgments_file: str = "acknowledgments.jsonl"):
+    def __init__(self, messages_file: str = "logs/dll_messages.jsonl"):
         """Initialize the game logger.
         
         Args:
             messages_file: Path to JSONL file for all DLL messages
-            acknowledgments_file: Path to JSONL file for acknowledgments
         """
         self.messages_file = Path(messages_file)
-        self.acknowledgments_file = Path(acknowledgments_file)
         self._lock = threading.Lock()
+        
+        # Ensure directory exists
+        self.messages_file.parent.mkdir(parents=True, exist_ok=True)
         
         # Ensure files exist
         self.messages_file.touch(exist_ok=True)
-        self.acknowledgments_file.touch(exist_ok=True)
 
     def log_message(self, message: dict[str, Any]) -> None:
         """Append a message to the JSONL file.
@@ -50,38 +50,23 @@ class GameLogger:
             with open(self.messages_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(msg_copy) + "\n")
 
-    def log_acknowledgment(self, notification_id: int, lookup_index: Optional[int] = None) -> None:
-        """Log that a notification was acknowledged.
-        
-        Args:
-            notification_id: ID of the notification (if we're tracking by ID)
-            lookup_index: Lookup index of the notification (from DLL)
-        """
-        ack = {
-            "timestamp": datetime.now().timestamp(),
-            "notification_id": notification_id,
-            "lookup_index": lookup_index,
-        }
-        
-        with self._lock:
-            with open(self.acknowledgments_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(ack) + "\n")
-
     def get_messages(
         self,
         message_type: Optional[str] = None,
         min_turn: Optional[int] = None,
         player_id: Optional[int] = None,
-        unacknowledged_only: bool = False
+        game_id: Optional[int] = None,
+        session_id: Optional[int] = None
     ) -> list[dict[str, Any]]:
         """Get messages from the JSONL file.
-        
+
         Args:
             message_type: Optional message type to filter by (e.g., "notification", "turn_start")
             min_turn: Optional minimum turn number to filter by
             player_id: Optional player ID to filter by
-            unacknowledged_only: If True, only return unacknowledged notifications (only applies to notifications)
-        
+            game_id: Optional game ID to filter by (from mapRandomSeed, persists across saves)
+            session_id: Optional session ID to filter by (changes on each pipe connection)
+
         Returns:
             List of message dictionaries
         """
@@ -98,21 +83,6 @@ class GameLogger:
                             messages.append(json.loads(line))
                         except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse message line: {e}")
-            
-            # Load acknowledged notifications if needed
-            acknowledged_lookup_indices = set()
-            if unacknowledged_only and self.acknowledgments_file.exists():
-                with open(self.acknowledgments_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            ack = json.loads(line)
-                            if "lookup_index" in ack and ack["lookup_index"] is not None:
-                                acknowledged_lookup_indices.add(ack["lookup_index"])
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse acknowledgment line: {e}")
             
             # Filter messages
             filtered = []
@@ -134,28 +104,19 @@ class GameLogger:
                     msg_player = msg.get("player_id")
                     if msg_player != player_id:
                         continue
-                
-                # Filter acknowledged (only for notifications)
-                if unacknowledged_only:
-                    msg_type = msg.get("type")
-                    if msg_type in ("notification", "game_notification"):
-                        lookup_idx = msg.get("lookup_index")
-                        if lookup_idx is not None and lookup_idx in acknowledged_lookup_indices:
-                            continue
-                
+
+                # Filter by game_id
+                if game_id is not None:
+                    msg_game_id = msg.get("game_id")
+                    if msg_game_id != game_id:
+                        continue
+
+                # Filter by session_id
+                if session_id is not None:
+                    msg_session_id = msg.get("session_id")
+                    if msg_session_id != session_id:
+                        continue
+
                 filtered.append(msg)
             
             return filtered
-
-    def acknowledge_notification(self, lookup_index: int) -> bool:
-        """Mark a notification as acknowledged by lookup_index.
-        
-        Args:
-            lookup_index: Lookup index of the notification to acknowledge
-        
-        Returns:
-            True if acknowledged (always returns True, just logs it)
-        """
-        self.log_acknowledgment(notification_id=-1, lookup_index=lookup_index)
-        return True
-

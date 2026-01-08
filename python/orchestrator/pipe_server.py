@@ -274,12 +274,26 @@ OnTurnStart = Callable[[dict[str, Any], PipeConnection], None]
 
 class StateProcessor:
     """Processes incoming state messages with validation and persistence."""
-    
+
     def __init__(self):
         """Initialize state processor."""
         self.validator = MessageValidator()
         self._last_state: Optional[dict[str, Any]] = None
         self._log = logging.getLogger(__name__)
+
+        # Session tracking - game_id persists across saves, session_id changes on each connection
+        self._current_game_id: Optional[int] = None
+        self._current_session_id: Optional[int] = None
+
+    @property
+    def current_game_id(self) -> Optional[int]:
+        """Get the current game ID (map random seed, persists across saves)."""
+        return self._current_game_id
+
+    @property
+    def current_session_id(self) -> Optional[int]:
+        """Get the current session ID (changes on each pipe connection)."""
+        return self._current_session_id
     
     def process_state(
         self,
@@ -315,14 +329,35 @@ class StateProcessor:
             self._log.debug(f"Received error response with no waiting request: {state.get('message')}")
             return
         
+        # Extract game_id and session_id from turn_start messages
+        if msg_type == "turn_start":
+            new_game_id = state.get("game_id")
+            new_session_id = state.get("session_id")
+
+            # Detect game change
+            if self._current_game_id is not None and new_game_id != self._current_game_id:
+                self._log.info(
+                    f"New game detected! game_id changed from {self._current_game_id} to {new_game_id}"
+                )
+                # Could clear in-memory caches, rotate logs, etc. here
+
+            # Detect session change (reconnect)
+            if self._current_session_id is not None and new_session_id != self._current_session_id:
+                self._log.info(
+                    f"New session detected! session_id changed from {self._current_session_id} to {new_session_id}"
+                )
+
+            self._current_game_id = new_game_id
+            self._current_session_id = new_session_id
+
         # Log EVERYTHING from DLL to JSONL file
         # Import here to avoid circular dependency
         from .game_logger import GameLogger
-        
+
         # Get or create game logger (simple singleton pattern)
         if not hasattr(self, "_message_logger"):
             self._message_logger = GameLogger()
-        
+
         # Just push everything we get from DLL (mark as incoming)
         log_msg = state.copy()
         log_msg["direction"] = "incoming"

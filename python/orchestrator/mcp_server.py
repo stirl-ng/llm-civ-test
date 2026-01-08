@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 
 if TYPE_CHECKING:
-    from .pipe_server import PipeConnection
+    from .pipe_server import PipeConnection, StateProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -104,17 +104,20 @@ AVAILABLE_TOOLS = [
     },
     {
         "name": "get_notifications",
-        "description": "Get unacknowledged notifications from the DLL.",
+        "description": "Get notifications from the DLL.",
         "parameters": [],
     },
     {
         "name": "get_message_history",
-        "description": "Get message history from the log with optional filters. Returns messages in the same format as they appear in the log.",
+        "description": "Get message history from the log with optional filters. Returns messages in the same format as they appear in the log. By default, filters to current game only.",
         "parameters": {
             "message_type": "optional string (e.g., 'turn_start', 'notification', 'action_result')",
             "direction": "optional string: 'incoming'|'outgoing'",
             "min_turn": "optional int",
             "player_id": "optional int",
+            "game_id": "optional int (filter by game ID, overrides current_game_only)",
+            "session_id": "optional int (filter by session ID)",
+            "current_game_only": "optional bool (default True, filter to current game)",
             "limit": "optional int (default 100, max 1000)"
         },
     },
@@ -149,14 +152,17 @@ class CivMCPServer:
 
     def __init__(
         self,
-        turn_timeout: float = 300.0
+        turn_timeout: float = 300.0,
+        state_processor: Optional["StateProcessor"] = None
     ):
         """Initialize the MCP server.
 
         Args:
             turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
+            state_processor: Optional StateProcessor for session tracking (game_id, session_id)
         """
         self.turn_timeout = turn_timeout
+        self._state_processor = state_processor
 
         # Pipe connection for sending actions (set during turn)
         self._pipe_conn: Optional["PipeConnection"] = None
@@ -288,7 +294,7 @@ class CivMCPServer:
     
     def get_action_stats(self) -> dict[str, Any]:
         """Get statistics about actions sent during the current turn.
-        
+
         Returns:
             Dictionary with action_count, action_errors, and last_action_time
         """
@@ -298,6 +304,20 @@ class CivMCPServer:
                 "action_errors": self._action_errors,
                 "last_action_time": self._last_action_time,
             }
+
+    @property
+    def current_game_id(self) -> Optional[int]:
+        """Get the current game ID (from StateProcessor)."""
+        if self._state_processor:
+            return self._state_processor.current_game_id
+        return None
+
+    @property
+    def current_session_id(self) -> Optional[int]:
+        """Get the current session ID (from StateProcessor)."""
+        if self._state_processor:
+            return self._state_processor.current_session_id
+        return None
     
     def reset_action_stats(self) -> None:
         """Reset action statistics (called at turn start)."""
@@ -377,6 +397,9 @@ class CivMCPServer:
                 direction=arguments.get("direction"),
                 min_turn=arguments.get("min_turn"),
                 player_id=arguments.get("player_id"),
+                game_id=arguments.get("game_id"),
+                session_id=arguments.get("session_id"),
+                current_game_only=arguments.get("current_game_only", True),
                 limit=arguments.get("limit", 100)
             ),
         }
@@ -639,18 +662,24 @@ class CivMCPServer:
         return {"message": "Dummy response - state caching removed, will query DLL directly"}
 
     def _get_notifications(self) -> dict[str, Any]:
-        """Get unacknowledged notifications from the log.
-        
+        """Get notifications from the log.
+
         Returns notifications in the same format as they appear in the log,
         ensuring parity between what's logged and what the LLM receives.
+        Filters by current game_id if available.
         """
+        # Filter by current game_id if available
+        game_id = self.current_game_id
+
         notifications = self._message_logger.get_messages(
             message_type="notification",
-            unacknowledged_only=True
+            game_id=game_id
         )
         return {
             "notifications": notifications,  # Same format as log entries
-            "count": len(notifications)
+            "count": len(notifications),
+            "game_id": game_id,
+            "session_id": self.current_session_id
         }
 
     def _get_player_status_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
@@ -663,48 +692,65 @@ class CivMCPServer:
         direction: Optional[str] = None,
         min_turn: Optional[int] = None,
         player_id: Optional[int] = None,
+        game_id: Optional[int] = None,
+        session_id: Optional[int] = None,
+        current_game_only: bool = True,
         limit: int = 100
     ) -> dict[str, Any]:
         """Get message history from the log with optional filters.
-        
+
         Returns messages in the same format as they appear in the log,
         ensuring parity between what's logged and what the LLM receives.
-        
+
         Args:
             message_type: Optional message type to filter by
             direction: Optional direction filter ('incoming' or 'outgoing')
             min_turn: Optional minimum turn number
             player_id: Optional player ID filter
+            game_id: Optional game ID filter (overrides current_game_only)
+            session_id: Optional session ID filter
+            current_game_only: If True and no game_id specified, filter by current game (default True)
             limit: Maximum number of messages to return (default 100, max 1000)
-        
+
         Returns:
             Dictionary with 'messages' list and 'count'
         """
         # Cap limit at 1000 to prevent excessive memory usage
         limit = min(limit, 1000)
-        
+
+        # If current_game_only and no explicit game_id, use current game
+        if current_game_only and game_id is None:
+            game_id = self.current_game_id
+
         # Get messages from logger
         messages = self._message_logger.get_messages(
             message_type=message_type,
             min_turn=min_turn,
-            player_id=player_id
+            player_id=player_id,
+            game_id=game_id,
+            session_id=session_id
         )
-        
+
         # Filter by direction if specified
         if direction:
             messages = [msg for msg in messages if msg.get("direction") == direction]
-        
+
         # Return most recent messages first, limited
         messages = list(reversed(messages))[:limit]
-        
+
         return {
             "messages": messages,
             "count": len(messages),
+            "game_id": game_id,
+            "session_id": self.current_session_id,
             "filters": {
                 "message_type": message_type,
                 "direction": direction,
                 "min_turn": min_turn,
                 "player_id": player_id,
+                "game_id": game_id,
+                "session_id": session_id,
+                "current_game_only": current_game_only,
                 "limit": limit
             }
         }
