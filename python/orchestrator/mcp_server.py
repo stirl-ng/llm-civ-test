@@ -99,8 +99,8 @@ AVAILABLE_TOOLS = [
     },
     {
         "name": "end_turn",
-        "description": "Signal that you are done with your turn.",
-        "parameters": {"notes": "optional string", "turn": "optional int"},
+        "description": "Signal that you are done with your turn. Requires turn number to prevent accidental progression.",
+        "parameters": {"notes": "optional string", "turn": "required int"},
     },
     {
         "name": "get_notifications",
@@ -373,7 +373,15 @@ class CivMCPServer:
         if name == "end_turn":
             notes = arguments.get("notes", "")
             turn = arguments.get("turn")
-            result = self._end_turn(notes=notes, turn=turn)
+            if turn is None:
+                error = {"error": "Missing required parameter 'turn'", "status": "error"}
+                self._log_tool_result_to_llm(name, error)
+                return error
+            if not isinstance(turn, int):
+                error = {"error": f"Parameter 'turn' must be an integer, got {type(turn).__name__}", "status": "error"}
+                self._log_tool_result_to_llm(name, error)
+                return error
+            result = self._end_turn(turn=turn, notes=notes)
             # end_turn already logs to JSONL, but also log as tool result
             self._log_tool_result_to_llm(name, result)
             return result
@@ -488,7 +496,7 @@ class CivMCPServer:
             logger.error(f"Exception sending action: {e}", exc_info=True)
             return {"error": f"Failed to send action: {e}"}
 
-    def _end_turn(self, notes: str = "", turn: Optional[int] = None) -> dict[str, Any]:
+    def _end_turn(self, turn: int, notes: str = "") -> dict[str, Any]:
         """Signal that the LLM is done with its turn and wait for DLL confirmation.
         
         The DLL might block the end-turn request if there are pending units, 
@@ -496,7 +504,7 @@ class CivMCPServer:
         
         Args:
             notes: Optional notes string to attach to the turn
-            turn: Optional turn number. If provided, will be validated against current turn.
+            turn: Required turn number. Must match current turn to prevent accidental progression.
         """
         with self._lock:
             if self._end_turn_in_progress:
@@ -511,24 +519,26 @@ class CivMCPServer:
                 self._end_turn_in_progress = False
             return {"error": "No pipe connection available", "status": "error"}
 
-        # Use provided turn if given, otherwise use current turn
-        turn_to_use = turn if turn is not None else current_turn
-        
-        # Validate turn if provided
-        if turn is not None and current_turn is not None and turn != current_turn:
-            logger.warning(f"LLM requested end_turn for turn {turn}, but current turn is {current_turn}")
+        # Validate turn matches current turn
+        if current_turn is not None and turn != current_turn:
+            with self._lock:
+                self._end_turn_in_progress = False
+            return {
+                "error": f"Turn mismatch: requested turn {turn} but current turn is {current_turn}",
+                "status": "error",
+                "requested_turn": turn,
+                "current_turn": current_turn
+            }
 
-        logger.info(f"LLM requesting end_turn (turn {turn_to_use})")
+        logger.info(f"LLM requesting end_turn (turn {turn})")
 
         # Log outgoing end_turn message to JSONL
-        end_turn_msg = {"type": "end_turn", "request_id": str(uuid.uuid4()), "direction": "outgoing"}
-        if turn_to_use is not None:
-            end_turn_msg["turn"] = turn_to_use
+        end_turn_msg = {"type": "end_turn", "request_id": str(uuid.uuid4()), "direction": "outgoing", "turn": turn}
         self._message_logger.log_message(end_turn_msg)
 
         # Send end_turn to DLL and wait for end_turn_result
         try:
-            result = pipe_conn.send_end_turn(turn=turn_to_use, timeout=15.0)
+            result = pipe_conn.send_end_turn(turn=turn, timeout=15.0)
             
             status = result.get("status", "unknown")
             
@@ -538,11 +548,10 @@ class CivMCPServer:
                     self._turn_notes = notes
                     self._end_turn_in_progress = False
                 
-                turn_info = f"Turn {turn_to_use}" if turn_to_use is not None else "Turn ?"
-                logger.info(f"✅ {turn_info} ended successfully (confirmed by DLL)")
+                logger.info(f"✅ Turn {turn} ended successfully (confirmed by DLL)")
                 return {
                     "status": "success",
-                    "turn": turn_to_use,
+                    "turn": turn,
                     "message": "Turn ended successfully"
                 }
             

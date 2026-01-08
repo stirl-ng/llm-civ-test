@@ -15,10 +15,10 @@ The DLL exports game state and accepts actions via a named pipe. The orchestrato
 
 **Turn flow:**
 1. DLL sends `turn_start` with game state via named pipe
-2. Orchestrator caches state and exposes via HTTP (MCP server)
+2. Orchestrator updates state and exposes via HTTP (MCP server)
 3. LLM queries state and sends actions one at a time
 4. Each action is forwarded to DLL, response returned to LLM
-5. LLM calls `end_turn` when done
+5. LLM calls `end_turn` with required `turn` parameter when done
 6. DLL advances to next turn
 
 ## Features
@@ -83,10 +83,10 @@ curl -X POST http://localhost:8765/tool \
   -H "Content-Type: application/json" \
   -d '{"tool": "send_action", "arguments": {"action": {"kind": "research", "tech": "TECH_POTTERY"}}}'
 
-# End turn
+# End turn (turn parameter is required)
 curl -X POST http://localhost:8765/tool \
   -H "Content-Type: application/json" \
-  -d '{"tool": "end_turn", "arguments": {}}'
+  -d '{"tool": "end_turn", "arguments": {"turn": 7}}'
 ```
 
 ## Available Tools
@@ -109,7 +109,7 @@ curl -X POST http://localhost:8765/tool \
 |--------|---------|-------------|
 | `--pipe` | `\\.\pipe\civv_llm` | Named pipe path |
 | `--mcp-port` | `8765` | HTTP server port |
-| `--turn-timeout` | `300` | Max seconds per turn |
+| `--turn-timeout` | `300` | (Deprecated - no longer used) |
 | `--dashboard` | off | Enable web dashboard |
 
 ## Documentation

@@ -38,7 +38,7 @@ The dashboard provides a web UI at `http://localhost:5000` with:
 # Custom MCP server port
 python -m orchestrator --mcp-port 9000
 
-# Custom turn timeout (default 300 seconds)
+# Custom turn timeout (deprecated - no longer used)
 python -m orchestrator --turn-timeout 120
 
 # Debug mode (view DLL messages without processing)
@@ -86,13 +86,13 @@ curl -X POST http://localhost:8765/tool \
   }'
 ```
 
-**End turn:**
+**End turn (turn parameter is required):**
 ```bash
 curl -X POST http://localhost:8765/tool \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "end_turn",
-    "arguments": {"notes": "Finished turn decisions"}
+    "arguments": {"turn": 7, "notes": "Finished turn decisions"}
   }'
 ```
 
@@ -132,14 +132,14 @@ This allows the LLM to react to the results of each action, making more intellig
 
 **Sequential Flow:**
 1. DLL sends `turn_start` with game state via named pipe
-2. Orchestrator sends notifications, pop ups, and alerts to LLM
-3. LLM queries state via HTTP
+2. Orchestrator updates state and exposes pipe connection
+3. LLM queries state via HTTP (forwarded to DLL)
 4. LLM sends action via HTTP
 5. Orchestrator forwards action to DLL immediately
 6. DLL executes action and returns result
 7. Result returned to LLM
-8. LLM can send more actions or call `end_turn`
-9. Orchestrator sends `end_turn` to DLL
+8. LLM can send more actions or call `end_turn` with required `turn` parameter
+9. Orchestrator forwards `end_turn` to DLL
 10. DLL advances to next turn
 
 ## Troubleshooting

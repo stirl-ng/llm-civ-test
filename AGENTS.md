@@ -50,12 +50,12 @@
 
 **Sequential turn flow:**
 1. DLL sends `turn_start` with game state via named pipe
-2. Orchestrator caches state and exposes via MCP HTTP server
+2. Orchestrator updates state and exposes via MCP HTTP server
 3. LLM queries state (`get_units`, `get_cities`, etc.) and sends actions
 4. Each action is forwarded to DLL immediately, response returned to LLM
 5. DLL forwards game events via hooks (notifications, popups, diplomacy, tech)
-6. LLM calls `end_turn` when done
-7. Orchestrator signals DLL to advance turn
+6. LLM calls `end_turn` with required `turn` parameter when done
+7. Orchestrator forwards `end_turn` to DLL, which advances turn
 
 **DLL hooks** (forward game events to pipe):
 - `SendNotificationToPipe`: Player notifications

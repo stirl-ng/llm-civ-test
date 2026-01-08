@@ -38,7 +38,7 @@ python -m orchestrator --debug
 | `--once` | - | Process one turn then exit |
 | `--mcp-host` | `localhost` | MCP HTTP server host |
 | `--mcp-port` | `8765` | MCP HTTP server port |
-| `--turn-timeout` | `300` | Max seconds per turn |
+| `--turn-timeout` | `300` | (Deprecated - no longer used) |
 | `--dashboard` | - | Start the monitoring dashboard |
 | `--dashboard-host` | `0.0.0.0` | Dashboard host |
 | `--dashboard-port` | `5000` | Dashboard port |
@@ -49,12 +49,12 @@ python -m orchestrator --debug
 ## Turn Flow
 
 1. **DLL sends `turn_start`** with full game state
-2. **Orchestrator caches state** and opens turn for LLM
+2. **Orchestrator updates state** and exposes pipe connection for LLM
 3. **LLM makes HTTP tool calls** to `/tool` endpoint:
-   - Query tools read from cache (fast)
+   - Query tools forward to DLL immediately, wait for result
    - Action tools forward to DLL immediately, wait for result
-4. **LLM calls `end_turn`** when done deciding
-5. **Orchestrator sends `end_turn`** to DLL
+4. **LLM calls `end_turn`** with required `turn` parameter when done deciding
+5. **Orchestrator forwards `end_turn`** to DLL
 6. **DLL advances** to next player
 
 ## MCP HTTP Endpoints
@@ -79,20 +79,23 @@ curl -X POST http://localhost:8765/tool \
   -H "Content-Type: application/json" \
   -d '{"tool": "send_action", "arguments": {"action": {"kind": "move_unit", "unit_id": 5, "to": [10, 12]}}}'
 
-# End turn
+# End turn (turn parameter is required)
 curl -X POST http://localhost:8765/tool \
   -H "Content-Type: application/json" \
-  -d '{"tool": "end_turn", "arguments": {"notes": "Moved warrior, started granary"}}'
+  -d '{"tool": "end_turn", "arguments": {"turn": 7, "notes": "Moved warrior, started granary"}}'
 ```
 
 ## Available Tools
 
 docs/protocol.md
 
-## Timeouts
+## Message Routing
 
-- **Turn timeout**: LLM has N seconds to complete their turn (default 300s)
-- If timeout occurs, turn ends automatically
+The orchestrator acts as a pure message router:
+- DLL messages are forwarded to the LLM via HTTP
+- LLM tool calls are forwarded to the DLL via named pipe
+- No blocking or timeout logic - the orchestrator processes messages as they arrive
+- The `turn` parameter in `end_turn` prevents accidental turn progression
 
 ## Files
 
