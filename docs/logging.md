@@ -187,7 +187,6 @@ All messages follow this format:
 | `mcp_server.py:_send_action()` | Actions to DLL | `outgoing` |
 | `mcp_server.py:_end_turn()` | End turn requests | `outgoing` |
 | `mcp_server.py:_ping()` | Ping messages | `outgoing` |
-| Acknowledgments | Separate file | `acknowledgments.jsonl` |
 
 **Missing:**
 - Tool calls from LLM (`from_llm`)

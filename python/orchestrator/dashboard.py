@@ -776,13 +776,25 @@ DASHBOARD_HTML = """
                     const type = msg.type || 'unknown';
                     const jsonStr = JSON.stringify(msg, null, 2);
                     
+                    let chevron = '';
+                    let chevronColor = '';
+                    if (direction === 'incoming') {
+                        chevron = '◀';
+                        chevronColor = '#22c55e';
+                    } else if (direction === 'outgoing') {
+                        chevron = '▶';
+                        chevronColor = '#ef4444';
+                    }
+                    
                     return `
                         <div class="log-entry">
                             <span class="timestamp">${timestamp}</span>
-                            <span class="level ${direction}">${direction}</span>
+                            <span class="level ${direction}">
+                                ${chevron ? `<span style="color: ${chevronColor}; font-size: 1.2em; margin-right: 0.25rem;">${chevron}</span>` : ''}${direction}
+                            </span>
                             <span class="level" style="background: #6b7280; margin-left: 0.5rem;">${type}</span>
-                            <details style="margin-top: 0.5rem;">
-                                <summary style="cursor: pointer; color: #4ade80;">View JSON</summary>
+                            <details open style="margin-top: 0.5rem;">
+                                <summary style="cursor: pointer; color: #d1d5db;">View JSON</summary>
                                 <pre style="background: #0f3460; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;">${escapeHtml(jsonStr)}</pre>
                             </details>
                         </div>
@@ -828,10 +840,19 @@ DASHBOARD_HTML = """
 """
 
 
-def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
-    """Create and configure the Flask dashboard application."""
+def create_dashboard_app(
+    mcp_server: Optional[CivMCPServer] = None,
+    state_processor: Optional["StateProcessor"] = None
+) -> Flask:
+    """Create and configure the Flask dashboard application.
+
+    Args:
+        mcp_server: Optional MCP server instance for tool execution
+        state_processor: Optional StateProcessor for session tracking (game_id, session_id)
+    """
     app = Flask(__name__)
     app.config["mcp_server"] = mcp_server
+    app.config["state_processor"] = state_processor
 
     @app.route("/")
     def index():
@@ -880,43 +901,85 @@ def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
     def api_tools():
         return jsonify({"tools": AVAILABLE_TOOLS})
 
+    @app.route("/api/session")
+    def api_session():
+        """Get current game and session info."""
+        state_processor = app.config.get("state_processor")
+        mcp = app.config.get("mcp_server")
+
+        game_id = None
+        session_id = None
+        turn_number = None
+        turn_active = False
+
+        if state_processor:
+            game_id = state_processor.current_game_id
+            session_id = state_processor.current_session_id
+
+        if mcp:
+            turn_number = mcp.turn_number
+            turn_active = mcp.turn_active
+
+        return jsonify({
+            "game_id": game_id,
+            "session_id": session_id,
+            "turn_number": turn_number,
+            "turn_active": turn_active,
+            "connected": state_processor is not None
+        })
+
     @app.route("/api/messages")
     def api_messages():
         """Get messages from JSONL log with optional filters."""
         from .game_logger import GameLogger
-        
+
         message_type = request.args.get("type")
         direction = request.args.get("direction")
         min_turn = request.args.get("min_turn", type=int)
         player_id = request.args.get("player_id", type=int)
+        game_id = request.args.get("game_id", type=int)
+        session_id = request.args.get("session_id", type=int)
+        current_game_only = request.args.get("current_game", type=bool, default=False)
         limit = int(request.args.get("limit", 100))
-        
+
         # Cap limit at 1000
         limit = min(limit, 1000)
-        
+
+        # If current_game_only and no explicit game_id, use current game from state_processor
+        state_processor = app.config.get("state_processor")
+        if current_game_only and game_id is None and state_processor:
+            game_id = state_processor.current_game_id
+
         # Get messages from logger
         game_logger = GameLogger()
         messages = game_logger.get_messages(
             message_type=message_type,
             min_turn=min_turn,
-            player_id=player_id
+            player_id=player_id,
+            game_id=game_id,
+            session_id=session_id
         )
-        
+
         # Filter by direction if specified
         if direction:
             messages = [msg for msg in messages if msg.get("direction") == direction]
-        
+
         # Return most recent messages first, limited
         messages = list(reversed(messages))[:limit]
-        
+
         return jsonify({
             "messages": messages,
             "count": len(messages),
+            "game_id": game_id,
+            "session_id": session_id,
             "filters": {
                 "type": message_type,
                 "direction": direction,
                 "min_turn": min_turn,
                 "player_id": player_id,
+                "game_id": game_id,
+                "session_id": session_id,
+                "current_game_only": current_game_only,
                 "limit": limit
             }
         })
@@ -928,11 +991,20 @@ def run_dashboard(
     host: str = "0.0.0.0",
     port: int = 5000,
     mcp_server: Optional[CivMCPServer] = None,
+    state_processor: Optional["StateProcessor"] = None,
     debug: bool = False,
 ):
-    """Run the Flask dashboard server."""
+    """Run the Flask dashboard server.
+
+    Args:
+        host: Host to bind to
+        port: Port to bind to
+        mcp_server: Optional MCP server instance
+        state_processor: Optional StateProcessor for session tracking
+        debug: Enable debug mode
+    """
     setup_dashboard_logging()
-    app = create_dashboard_app(mcp_server)
+    app = create_dashboard_app(mcp_server, state_processor)
 
     print(f"Dashboard running at http://{host}:{port}")
     app.run(host=host, port=port, debug=debug, threaded=True)
