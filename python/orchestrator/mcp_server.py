@@ -10,7 +10,6 @@ Each action is sent immediately to the DLL and the response is returned
 to the LLM, allowing it to see the result before deciding the next action.
 """
 
-import logging
 import threading
 import time
 import uuid
@@ -20,133 +19,11 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from .pipe_server import PipeConnection, StateProcessor
 
-logger = logging.getLogger(__name__)
 
 
-def _validate_action(action: Any) -> tuple[bool, Optional[str]]:
-    """Validate that an action is properly formatted.
-    
-    Args:
-        action: The action to validate (should have 'kind' field)
-        
-    Returns:
-        Tuple of (is_valid, error_message). If valid, error_message is None.
-    """
-    if not isinstance(action, dict):
-        return False, f"Action must be a dictionary, got {type(action).__name__}"
-    
-    if not action:
-        return False, "Action cannot be empty"
-    
-    # Check for required 'kind' field (will become message 'type')
-    if "kind" not in action:
-        return False, "Action missing required 'kind' field"
-    
-    return True, None
-
-
-# Tool definitions for documentation/discovery
-AVAILABLE_TOOLS = [
-    {
-        "name": "get_game_state",
-        "description": "Get the current game state. Optionally filter by category.",
-        "parameters": {"category": "optional string"},
-    },
-    {
-        "name": "send_action",
-        "description": "Send an action to the game (fire-and-forget, non-blocking). Does not wait for response.",
-        "parameters": ["action"],
-    },
-    {
-        "name": "get_cities",
-        "description": "Get detailed information about all cities.",
-        "parameters": {"city_id": "optional int"},
-    },
-    {
-        "name": "get_units",
-        "description": "Get information about all units.",
-        "parameters": {"player_id": "optional int (defaults to active player)"},
-    },
-    {
-        "name": "get_tech_tree",
-        "description": "Get technology tree status.",
-        "parameters": {},
-    },
-    {
-        "name": "get_diplomacy",
-        "description": "Get diplomatic status with all known civilizations.",
-        "parameters": {},
-    },
-    {
-        "name": "get_available_choices",
-        "description": "Get all pending decisions (tech, policy, production, etc.)",
-        "parameters": {},
-    },
-    {
-        "name": "get_victory_progress",
-        "description": "Get progress toward all victory conditions.",
-        "parameters": {},
-    },
-    {
-        "name": "get_resources",
-        "description": "Get strategic and luxury resources.",
-        "parameters": {},
-    },
-    {
-        "name": "get_state_refresh",
-        "description": "Force a full state refresh from the DLL.",
-        "parameters": {},
-    },
-    {
-        "name": "end_turn",
-        "description": "Signal that you are done with your turn. Requires turn number to prevent accidental progression.",
-        "parameters": {"turn": "required int"},
-    },
-    {
-        "name": "add_note",
-        "description": "Add a note to the log. Notes are stored in the JSONL log and can be retrieved with get_log(type='note'). Returns a note_id that can be used to delete the note later.",
-        "parameters": {"content": "required string"},
-    },
-    {
-        "name": "delete_note",
-        "description": "Delete a note by its note_id. The note will be filtered out when retrieving notes with get_log(type='note').",
-        "parameters": {"note_id": "required string"},
-    },
-    {
-        "name": "get_notifications",
-        "description": "Get notifications from the DLL.",
-        "parameters": [],
-    },
-    {
-        "name": "get_log",
-        "description": "Get log entries from the JSONL log with optional filters. Returns messages in the same format as they appear in the log. By default, filters to current game only. Use get_log(type='note') to retrieve notes.",
-        "parameters": {
-            "message_type": "optional string (e.g., 'turn_start', 'notification', 'action_result', 'note')",
-            "direction": "optional string: 'incoming'|'outgoing'",
-            "min_turn": "optional int",
-            "player_id": "optional int",
-            "game_id": "optional int (filter by game ID, overrides current_game_only)",
-            "session_id": "optional int (filter by session ID)",
-            "current_game_only": "optional bool (default True, filter to current game)",
-            "limit": "optional int (default 100, max 1000)"
-        },
-    },
-    {
-        "name": "get_player_status",
-        "description": "Get detailed status information for a player (science, gold, happiness, etc.).",
-        "parameters": {"player_id": "optional int (defaults to active player)"},
-    },
-    {
-        "name": "send_action_with_confirmation",
-        "description": "Send an action and then query the game state after a delay to confirm it executed. Useful for moves where you want to verify the unit moved.",
-        "parameters": {"action": "action dict", "delay_seconds": "optional float (default 0.5)", "query_type": "optional string: 'units'|'state' (default 'units')"},
-    },
-    {
-        "name": "ping",
-        "description": "Ping the server to check connectivity and get server status.",
-        "parameters": {},
-    },
-]
+class ToolError(Exception):
+    """Raised when a tool encounters an error (param validation, missing pipe, etc.)."""
+    pass
 
 
 class CivMCPServer:
@@ -158,80 +35,114 @@ class CivMCPServer:
     3. Each action is sent immediately to DLL, response returned to LLM
     4. LLM calls end_turn when done
     5. Orchestrator resumes, signals DLL to advance turn
+
+    NOTE: Multiplayer considerations
+    =================================
+    Currently designed for single-player with one LLM client. The synchronous
+    blocking design works well for this use case. If we add simultaneous
+    multiplayer support in the future, we'll need to:
+    1. Pass request_id from execute_tool() down to all tool handlers
+    2. Ensure all tool handlers propagate request_id to DLL requests
+    3. Consider async/queue-based architecture if multiple clients need
+       concurrent access to the same game state
+    4. Add client/session tracking to route responses correctly
     """
 
-    def __init__(
-        self,
-        turn_timeout: float = 300.0,
-        state_processor: Optional["StateProcessor"] = None
-    ):
+    def __init__(self, turn_timeout: float = 300.0):
         """Initialize the MCP server.
 
         Args:
             turn_timeout: Max seconds to wait for LLM to end turn (default 5 min)
-            state_processor: Optional StateProcessor for session tracking (game_id, session_id)
         """
         self.turn_timeout = turn_timeout
-        self._state_processor = state_processor
 
         # Turn management
         self._pipe_conn: Optional["PipeConnection"] = None
-        self._current_turn_number: Optional[int] = None  # Track which turn is active
-        self._first_turn_of_game: Optional[int] = None  # Track first turn of current game session
-        self._end_turn_in_progress = False  # Track if an end_turn request is currently being processed
+        self._current_turn_number: Optional[int] = None
+        self._first_turn_of_game: Optional[int] = None
+        self._end_turn_in_progress = False
         self._lock = threading.Lock()
-        
+
+        # Session tracking (game_id persists across saves, session_id per connection)
+        self._current_game_id: Optional[int] = None
+        self._current_session_id: Optional[int] = None
+        self._current_player_id: Optional[int] = None
+
         # Action statistics
         self._action_count = 0
         self._action_errors = 0
         self._last_action_time: Optional[float] = None
-        
-        # Game logger (JSONL file) - logs everything from DLL
-        from .game_logger import GameLogger
-        self._message_logger = GameLogger()
+
+        self.uptime = time.monotonic()
+
+        # Game logger (JSONL file) - singleton, shared across all components
+        from .game_logger import get_game_logger
+        self._message_logger = get_game_logger()
+
+    def get_about(self) -> dict[str, Any]:
+        """Get information about the MCP server."""
+        return {
+            "turn_timeout": self.turn_timeout,
+            "current_turn_number": self._current_turn_number,
+            "end_turn_in_progress": self._end_turn_in_progress,
+            "action_count": self._action_count,
+            "action_errors": self._action_errors,
+            "last_action_time": self._last_action_time,
+            "uptime": self.uptime,
+        }
+
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Get the tools available to the MCP server.
+
+        Generates tool definitions from handler docstrings and _TOOLS registry.
+        """
+        tools = []
+
+        # Implemented tools - description from docstring
+        for name, (handler_name, params) in self._TOOLS.items():
+            handler = getattr(self, handler_name, None)
+            description = (handler.__doc__ or "").strip().split("\n")[0] if handler else ""
+            tools.append({
+                "name": name,
+                "description": description,
+                "parameters": params,
+            })
+
+        # Placeholder tools - description from _PLACEHOLDER_TOOLS
+        for name, description in self._PLACEHOLDER_TOOLS.items():
+            tools.append({
+                "name": name,
+                "description": description,
+                "parameters": {},
+            })
+
+        return tools
 
     def start_turn(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
         """Update turn state with the given game state and pipe connection.
 
         Args:
-            state: Game state from DLL (not cached, just used for turn number)
+            state: Game state from DLL (contains turn, player_id, game_id, session_id)
             pipe_conn: PipeConnection for sending actions to DLL
         """
         new_turn_num = state.get("turn")
-        
+        new_game_id = state.get("game_id")
+        new_session_id = state.get("session_id")
+        new_player_id = state.get("player_id")
+
         with self._lock:
-            # Detect new game: if turn goes backwards significantly (more than 10 turns),
-            # or if we don't have a first turn tracked yet, treat it as a new game
-            if new_turn_num is not None:
-                if self._first_turn_of_game is None:
-                    # First turn we've seen - start tracking this game
-                    self._first_turn_of_game = new_turn_num
-                    logger.info(f"Starting new game session (first turn: {new_turn_num})")
-                elif new_turn_num < self._first_turn_of_game - 10:
-                    # Turn went backwards significantly - new game started
-                    logger.info(f"New game detected (turn {new_turn_num} < previous first turn {self._first_turn_of_game})")
-                    self._first_turn_of_game = new_turn_num
-            
-            # Update turn state
+            # Update all state
             self._pipe_conn = pipe_conn
             self._current_turn_number = new_turn_num
-            self._end_turn_in_progress = False  # Reset end_turn flag for new turn
+            self._current_game_id = new_game_id
+            self._current_session_id = new_session_id
+            self._current_player_id = new_player_id
+            self._end_turn_in_progress = False
+
             # Reset action statistics for new turn
             self._action_count = 0
             self._action_errors = 0
             self._last_action_time = None
-
-        turn_num = state.get("turn", "?")
-        player_id = state.get("player_id", "?")
-        logger.debug(f"Turn {turn_num} state updated (Player {player_id})")
-
-
-    
-    @property
-    def turn_active(self) -> bool:
-        """Check if we have an active pipe connection."""
-        with self._lock:
-            return self._pipe_conn is not None
     
     @property
     def turn_number(self) -> Optional[int]:
@@ -247,6 +158,10 @@ class CivMCPServer:
         """
         with self._lock:
             return {
+                "game_id": self._current_game_id,
+                "session_id": self._current_session_id,
+                "turn": self._current_turn_number,
+                "player_id": self._current_player_id,
                 "action_count": self._action_count,
                 "action_errors": self._action_errors,
                 "last_action_time": self._last_action_time,
@@ -254,292 +169,249 @@ class CivMCPServer:
 
     @property
     def current_game_id(self) -> Optional[int]:
-        """Get the current game ID (from StateProcessor)."""
-        if self._state_processor:
-            return self._state_processor.current_game_id
-        return None
+        """Get the current game ID (persists across saves)."""
+        with self._lock:
+            return self._current_game_id
 
     @property
     def current_session_id(self) -> Optional[int]:
-        """Get the current session ID (from StateProcessor)."""
-        if self._state_processor:
-            return self._state_processor.current_session_id
-        return None
-    
-    def reset_action_stats(self) -> None:
-        """Reset action statistics (called at turn start)."""
+        """Get the current session ID (changes per pipe connection)."""
         with self._lock:
-            self._action_count = 0
-            self._action_errors = 0
-            self._last_action_time = None
+            return self._current_session_id
 
-    def _log_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
-        """Log a tool call (for tools that don't generate pipe messages)."""
-        if name not in ("send_action", "end_turn"):
-            logger.info(f"🔧 TOOL CALL: {name}\n{arguments}")
-
-    def _log_tool_result(self, name: str, result: dict[str, Any], is_error: bool = False) -> None:
-        """Log a tool result."""
-        if name in ("send_action", "end_turn"):
-            return
-        if is_error:
-            logger.warning(f"❌ TOOL ERROR: {name}: {result}")
-        else:
-            logger.info(f"✅ TOOL RESULT: {name}: {result}")
-    
-    def _log_tool_result_to_llm(self, name: str, result: dict[str, Any]) -> None:
-        """Log tool result sent to LLM to JSONL file.
-        
-        This ensures parity between what's logged and what the LLM receives.
-        """
-        from datetime import datetime
-        tool_result_log = {
-            "type": f"tool_result_{name}",
-            "direction": "incoming",
-            "timestamp": datetime.now().timestamp(),
-            "tool": name,
-            "result": result
-        }
-        # Add turn if available
+    @property
+    def current_player_id(self) -> Optional[int]:
+        """Get the current player ID."""
         with self._lock:
-            if self._current_turn_number is not None:
-                tool_result_log["turn"] = self._current_turn_number
-        self._message_logger.log_message(tool_result_log)
+            return self._current_player_id
 
-    def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Execute a tool and return results."""
-        self._log_tool_call(name, arguments)
-        
-        # Log tool call from LLM to JSONL
-        from datetime import datetime
-        tool_call_log = {
-            "type": "tool_call",
-            "direction": "outgoing",
-            "timestamp": datetime.now().timestamp(),
-            "tool": name,
-            "arguments": arguments
-        }
-        # Add turn if available
-        with self._lock:
-            if self._current_turn_number is not None:
-                tool_call_log["turn"] = self._current_turn_number
-        self._message_logger.log_message(tool_call_log)
+    # -------------------------------------------------------------------------
+    # Helper methods for tool implementations
+    # -------------------------------------------------------------------------
 
-        # Query tools - return dummy responses (will be replaced with DLL calls later)
-        query_tools = {
-            "get_game_state": lambda: self._get_game_state_dummy(
-                category=arguments.get("category")
-            ),
-            "get_cities": lambda: self._get_cities_dummy(city_id=arguments.get("city_id")),
-            "get_units": lambda: self._get_units_dummy(player_id=arguments.get("player_id")),
-            "get_tech_tree": lambda: self._get_tech_tree_dummy(),
-            "get_diplomacy": lambda: self._get_diplomacy_dummy(),
-            "get_available_choices": lambda: self._get_available_choices_dummy(),
-            "get_victory_progress": lambda: self._get_victory_progress_dummy(),
-            "get_resources": lambda: self._get_resources_dummy(),
-            "get_state_refresh": lambda: self._get_state_refresh_dummy(),
-            "get_notifications": lambda: self._get_notifications(),
-            "get_log": lambda: self._get_log(
-                message_type=arguments.get("message_type"),
-                direction=arguments.get("direction"),
-                min_turn=arguments.get("min_turn"),
-                player_id=arguments.get("player_id"),
-                game_id=arguments.get("game_id"),
-                session_id=arguments.get("session_id"),
-                current_game_only=arguments.get("current_game_only", True),
-                limit=arguments.get("limit", 100)
-            ),
-        }
+    def _require_param(
+        self, arguments: dict[str, Any], name: str, param_type: type
+    ) -> Any:
+        """Get and validate a required parameter.
 
-        if name in query_tools:
-            result = query_tools[name]()
-            self._log_tool_result(name, result, is_error="error" in result)
-            # Log tool result to LLM
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        # Action tools
-        if name == "send_action":
-            action = arguments.get("action")
-            if action is None:
-                error = {"error": "Missing required parameter 'action'"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            if not isinstance(action, dict):
-                error = {"error": f"Parameter 'action' must be a dictionary, got {type(action).__name__}"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            result = self._send_action(action=action)
-            # send_action already logs its result (action_result from DLL), but log the tool result too
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        # Turn control
-        if name == "end_turn":
-            turn = arguments.get("turn")
-            if turn is None:
-                error = {"error": "Missing required parameter 'turn'", "status": "error"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            if not isinstance(turn, int):
-                error = {"error": f"Parameter 'turn' must be an integer, got {type(turn).__name__}", "status": "error"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            result = self._end_turn(turn=turn)
-            # end_turn already logs to JSONL, but also log as tool result
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        # Note tools
-        if name == "add_note":
-            content = arguments.get("content")
-            if content is None:
-                error = {"error": "Missing required parameter 'content'"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            if not isinstance(content, str):
-                error = {"error": f"Parameter 'content' must be a string, got {type(content).__name__}"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            result = self._add_note(content=content)
-            self._log_tool_result(name, result, is_error="error" in result)
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        if name == "delete_note":
-            note_id = arguments.get("note_id")
-            if note_id is None:
-                error = {"error": "Missing required parameter 'note_id'"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            if not isinstance(note_id, str):
-                error = {"error": f"Parameter 'note_id' must be a string, got {type(note_id).__name__}"}
-                self._log_tool_result_to_llm(name, error)
-                return error
-            result = self._delete_note(note_id=note_id)
-            self._log_tool_result(name, result, is_error="error" in result)
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        if name == "get_player_status":
-            player_id = arguments.get("player_id")
-            result = self._get_player_status_dummy(player_id=player_id)
-            self._log_tool_result(name, result, is_error="error" in result)
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        if name == "send_action_with_confirmation":
-            action = arguments.get("action")
-            if action is None:
-                return {"error": "Missing required parameter 'action'"}
-            if not isinstance(action, dict):
-                return {"error": f"Parameter 'action' must be a dictionary, got {type(action).__name__}"}
-            delay_seconds = arguments.get("delay_seconds", 0.5)
-            query_type = arguments.get("query_type", "units")
-            result = self._send_action_with_confirmation(
-                action=action,
-                delay_seconds=delay_seconds,
-                query_type=query_type
-            )
-            self._log_tool_result(name, result, is_error="error" in result)
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        if name == "ping":
-            result = self._ping()
-            self._log_tool_result(name, result, is_error="error" in result)
-            self._log_tool_result_to_llm(name, result)
-            return result
-
-        # Unknown tool
-        error = {"error": f"Unknown tool: {name}"}
-        self._log_tool_result(name, error, is_error=True)
-        return error
-
-    def _send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Send an action to the DLL immediately and return the response.
-        
         Args:
-            action: Action dictionary to send (must have 'kind' field typically)
-            
+            arguments: The tool arguments dict
+            name: Parameter name to extract
+            param_type: Expected type (str, int, dict, etc.)
+
         Returns:
-            Response from DLL, or error dict if validation/execution fails
+            The validated parameter value
+
+        Raises:
+            ToolError: If parameter is missing or wrong type
         """
-        # Validate action format
-        is_valid, error_msg = _validate_action(action)
-        if not is_valid:
-            with self._lock:
-                self._action_errors += 1
-            logger.warning(f"Invalid action rejected: {error_msg}")
-            return {"error": error_msg, "action": action}
-        
+        value = arguments.get(name)
+        if value is None:
+            raise ToolError(f"Missing required parameter '{name}'")
+        if not isinstance(value, param_type):
+            raise ToolError(
+                f"Parameter '{name}' must be {param_type.__name__}, "
+                f"got {type(value).__name__}"
+            )
+        return value
+
+    def _get_pipe(self) -> "PipeConnection":
+        """Get the pipe connection or raise if not available.
+
+        Returns:
+            The current PipeConnection
+
+        Raises:
+            ToolError: If no pipe connection is available
+        """
         with self._lock:
             pipe_conn = self._pipe_conn
-            current_turn = self._current_turn_number
-        
         if not pipe_conn:
-            with self._lock:
-                self._action_errors += 1
-            return {"error": "Cannot send action - no pipe connection available"}
+            raise ToolError("No pipe connection available")
+        return pipe_conn
 
-        if not pipe_conn:
-            with self._lock:
-                self._action_errors += 1
-            return {"error": "No pipe connection available"}
+    def _send_pipe_request(
+        self, request_type: str, timeout: float = 5.0, request_id: Optional[str] = None, **extra_fields: Any
+    ) -> dict[str, Any]:
+        """Send a request to the DLL and return the response.
 
-        import time
-        action_kind = action.get("kind")
-        if not action_kind:
-            return {"error": "Action missing 'kind' field"}
-        
-        logger.debug(f"Turn {current_turn}: Preparing action '{action_kind}'")
+        Args:
+            request_type: The message type (e.g., "get_state", "get_units")
+            timeout: Request timeout in seconds
+            request_id: Request ID for request/response matching (required for proper matching)
+            **extra_fields: Additional fields to include in the request
 
-        # Convert action to explicit message type per protocol
-        # Protocol: actions are explicit message types, not wrapped in generic "action"
-        # Extract 'kind' and use it as 'type', add request_id, keep other fields
-        message = action.copy()
-        message["type"] = action_kind
-        message["request_id"] = str(uuid.uuid4())
-        # Remove 'kind' since it's now 'type'
-        if "kind" in message:
-            del message["kind"]
+        Returns:
+            Response dict from DLL
 
-        # Log outgoing message to JSONL
-        log_msg = message.copy()
-        log_msg["direction"] = "outgoing"
-        self._message_logger.log_message(log_msg)
-
-        # Send action (synchronous, blocks until result or timeout)
+        Raises:
+            ToolError: If no pipe connection or request fails
+        """
+        pipe = self._get_pipe()
+        # uuid should always be provided by execute_tool, but generate one if missing for safety
+        if request_id is None:
+            request_id = str(uuid.uuid4())
+        request = {
+            "type": request_type,
+            "request_id": request_id,
+            **extra_fields,
+        }
         try:
-            # We'll use a 10s timeout for actions
-            result = pipe_conn.send_action(message, timeout=10.0)
-            
-            if "error" in result:
-                with self._lock:
-                    self._action_errors += 1
-                return result
-            
-            # Action succeeded or returned a result
+            return pipe.send_request(request, timeout=timeout)
+        except Exception as e:
+            raise ToolError(f"Request failed: {e}") from e
+
+    def _not_implemented(self, tool_name: str) -> dict[str, Any]:
+        """Return a standard 'not implemented' response for placeholder tools."""
+        return {
+            "status": "not_implemented",
+            "message": f"Tool '{tool_name}' is not yet implemented in the DLL",
+        }
+
+    def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute a tool and return results.
+
+        Single log entry with both call and result after execution.
+        ToolErrors are expected (validation failures) and returned cleanly.
+        
+        Generates a request_id for all tools that need to match request/response.
+        """
+        # Generate request_id for DLL-calling tools
+        request_id = str(uuid.uuid4())
+        
+        # Execute the tool
+        try:
+            if name in self._TOOLS:
+                handler_name, _ = self._TOOLS[name]
+                handler = getattr(self, handler_name)
+                result = handler(request_id, arguments)
+                
+                # Verify request_id matching for DLL-calling tools
+                response_request_id = result.get("request_id")
+                if response_request_id != request_id:
+                    raise ToolError(f"Request ID mismatch for tool '{name}': sent {request_id}, received {response_request_id}")
+
+            elif name in self._PLACEHOLDER_TOOLS:
+                result = self._not_implemented(name)
+
+            else:
+                raise ToolError(f"Unknown tool: {name}")
+        except ToolError as e:
+            result = {"error": str(e), "status": "error"}
+        except Exception as e:
+            result = {"error": str(e), "status": "error"}
+
+        # Single log entry with both call and result
+        self._message_logger.log_message({
+            "type": "tool_call",
+            "game_id": self._current_game_id,
+            "session_id": self._current_session_id,
+            "player_id": self._current_player_id,
+            "turn": self.turn_number,
+            "tool": name,
+            "arguments": arguments,
+            "result": result,
+        })
+
+        return result
+
+    # -------------------------------------------------------------------------
+    # Tool Registry
+    # -------------------------------------------------------------------------
+    # Each tool maps to (handler_method_name, params_dict)
+    # Description comes from the handler's docstring
+
+    _TOOLS: dict[str, tuple[str, dict]] = {
+        # Query tools (DLL requests)
+        "get_game_state": ("_get_game_state", {"category": "optional string"}),
+        "get_current_turn": ("_get_current_turn", {}),
+        "get_cities": ("_get_cities", {"city_id": "optional int"}),
+        "get_units": ("_get_units", {"player_id": "optional int"}),
+        "get_notifications": ("_get_notifications", {}),
+        "ping": ("_ping", {}),
+        # Log tools (local)
+        "get_log": ("_get_log", {
+            "message_type": "optional string (e.g., 'turn_start', 'notification', 'note')",
+            "direction": "optional string: 'incoming'|'outgoing'",
+            "turn_number": "optional int",
+            "player_id": "optional int",
+            "game_id": "optional int (overrides current_game_only)",
+            "session_id": "optional int",
+            "current_game_only": "optional bool (default True)",
+            "limit": "optional int (default 100, max 1000)",
+        }),
+        "add_note": ("_add_note", {"content": "required string"}),
+        "delete_message": ("_delete_message", {"message_id": "required string (uuid of message to delete)"}),
+        "delete_note": ("_delete_message", {"message_id": "required string (uuid of note to delete)"}),
+        # Action tools
+        "send_action": ("_send_action", {"action": "required dict with 'kind' field"}),
+        "end_turn": ("_end_turn", {"turn": "required int"}),
+    }
+
+    # Placeholder tools - description only, not yet implemented in DLL
+    _PLACEHOLDER_TOOLS: dict[str, str] = {
+        "get_tech_tree": "Get technology tree status.",
+        "get_diplomacy": "Get diplomatic status with all known civilizations.",
+        "get_available_choices": "Get all pending decisions (tech, policy, production, etc.)",
+        "get_victory_progress": "Get progress toward all victory conditions.",
+        "get_resources": "Get strategic and luxury resources.",
+        "get_state_refresh": "Force a full state refresh from the DLL.",
+        "get_player_status": "Get detailed status information for a player.",
+    }
+
+    def _send_action(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Send an action to the DLL and return the response.
+        
+        Args:
+            request_id: Request ID to use for request/response matching
+            args: Tool arguments containing the action
+        """
+        action = self._require_param(args, "action", dict)
+
+        # Validate action has required 'kind' field
+        if not action:
             with self._lock:
-                self._action_count += 1
-                self._last_action_time = time.time()
-            
+                self._action_errors += 1
+            raise ToolError("Action cannot be empty")
+        if "kind" not in action:
+            with self._lock:
+                self._action_errors += 1
+            raise ToolError("Action missing required 'kind' field")
+
+        pipe = self._get_pipe()
+        action_kind = action["kind"]
+
+        # Convert action to message: 'kind' -> 'type', use provided request_id
+        message = {k: v for k, v in action.items() if k != "kind"}
+        message["type"] = action_kind
+        message["request_id"] = request_id
+
+        # Send and track stats
+        try:
+            result = pipe.send_action(message, timeout=10.0)
+            with self._lock:
+                if "error" in result:
+                    self._action_errors += 1
+                else:
+                    self._action_count += 1
+                    self._last_action_time = time.time()
             return result
         except Exception as e:
             with self._lock:
                 self._action_errors += 1
-            logger.error(f"Exception sending action: {e}", exc_info=True)
-            return {"error": f"Failed to send action: {e}"}
+            raise ToolError(f"Failed to send action: {e}") from e
 
-    def _end_turn(self, turn: int) -> dict[str, Any]:
+    def _end_turn(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
         """Signal that the LLM is done with its turn and wait for DLL confirmation.
-        
-        The DLL might block the end-turn request if there are pending units, 
+
+        The DLL might block the end-turn request if there are pending units,
         tech choices, etc. This method waits for the authoritative result.
         
         Args:
-            turn: Required turn number. Must match current turn to prevent accidental progression.
+            request_id: Request ID to use for request/response matching
+            args: Tool arguments containing the turn number
         """
+        turn = self._require_param(args, "turn", int)
         with self._lock:
             if self._end_turn_in_progress:
                 return {"error": "An end_turn request is already in progress", "status": "error"}
@@ -553,45 +425,47 @@ class CivMCPServer:
                 self._end_turn_in_progress = False
             return {"error": "No pipe connection available", "status": "error"}
 
+        # Validate that we have a current turn number set
+        if current_turn is None:
+            with self._lock:
+                self._end_turn_in_progress = False
+            return {
+                "error": "No active turn - turn_start has not been received yet",
+                "status": "error",
+                "requested_turn": turn,
+                "current_turn": None,
+                "message": "Cannot end turn: no turn has been started. Wait for turn_start message from DLL."
+            }
+
         # Validate turn matches current turn
-        if current_turn is not None and turn != current_turn:
+        if turn != current_turn:
             with self._lock:
                 self._end_turn_in_progress = False
             return {
                 "error": f"Turn mismatch: requested turn {turn} but current turn is {current_turn}",
                 "status": "error",
                 "requested_turn": turn,
-                "current_turn": current_turn
+                "current_turn": current_turn,
+                "message": f"Turn number mismatch. You requested to end turn {turn}, but the current turn is {current_turn}."
             }
-
-        logger.info(f"LLM requesting end_turn (turn {turn})")
-
-        # Log outgoing end_turn message to JSONL
-        end_turn_msg = {"type": "end_turn", "request_id": str(uuid.uuid4()), "direction": "outgoing", "turn": turn}
-        self._message_logger.log_message(end_turn_msg)
 
         # Send end_turn to DLL and wait for end_turn_result
         try:
-            result = pipe_conn.send_end_turn(turn=turn, timeout=15.0)
+            result = pipe_conn.send_end_turn(turn=turn, request_id=request_id, timeout=15.0)
             
             status = result.get("status", "unknown")
             
             if status == "success":
-                # DLL confirmed turn ended successfully
                 with self._lock:
                     self._end_turn_in_progress = False
-                
-                logger.info(f"✅ Turn {turn} ended successfully (confirmed by DLL)")
                 return {
                     "status": "success",
                     "turn": turn,
                     "message": "Turn ended successfully"
                 }
-            
+
             elif status == "blocked":
                 blocker = result.get("blocker", "unknown")
-                logger.warning(f"❌ End turn blocked by: {blocker}")
-                # Clear the in-progress flag so LLM can try again after resolving blocker
                 with self._lock:
                     self._end_turn_in_progress = False
                 return {
@@ -599,27 +473,24 @@ class CivMCPServer:
                     "blocker": blocker,
                     "message": f"Turn cannot end yet: {blocker}. Please resolve the blocker and try again."
                 }
-            
+
             elif status == "already_ended":
-                logger.info("End turn requested but turn already ended")
                 with self._lock:
                     self._end_turn_in_progress = False
                 return {
                     "status": "already_ended",
                     "message": "Turn has already been ended"
                 }
-            
+
             elif status == "timeout":
-                logger.error("Timeout waiting for end_turn_result from DLL")
                 with self._lock:
                     self._end_turn_in_progress = False
                 return {
                     "status": "timeout",
                     "error": "DLL did not respond to end_turn request in time"
                 }
-            
+
             else:
-                logger.error(f"Unexpected end_turn status: {status}")
                 with self._lock:
                     self._end_turn_in_progress = False
                 return {
@@ -627,136 +498,134 @@ class CivMCPServer:
                     "error": f"DLL returned unexpected status: {status}",
                     "result": result
                 }
-                
+
         except Exception as e:
-            logger.error(f"Exception during end_turn: {e}", exc_info=True)
             with self._lock:
                 self._end_turn_in_progress = False
             return {"error": f"Failed to end turn: {e}"}
 
-    def _get_game_state_dummy(self, category: Optional[str] = None) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    # -------------------------------------------------------------------------
+    # DLL Query Tools
+    # -------------------------------------------------------------------------
 
-    def _get_cities_dummy(self, city_id: Optional[int] = None) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    def _get_game_state(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Query the DLL for current game state."""
+        # category = args.get("category")  # Reserved for future use
+        result = self._send_pipe_request("get_state", request_id=request_id)
+        if result.get("type") == "state_refresh":
+            state = result.get("state", {})
+            return {
+                "status": "success",
+                "turn": state.get("turn"),
+                "active_player": state.get("activePlayer"),
+                "state": state,
+            }
+        return result
 
-    def _get_units_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    def _get_current_turn(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Query the DLL for the current turn number."""
+        result = self._send_pipe_request("get_state", request_id=request_id)
+        if result.get("type") == "state_refresh":
+            state = result.get("state", {})
+            return {
+                "status": "success",
+                "turn": state.get("turn"),
+                "active_player": state.get("activePlayer"),
+            }
+        return result
 
-    def _get_tech_tree_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    def _get_cities(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Get information about cities from DLL."""
+        # city_id = args.get("city_id")  # Reserved for future filtering
+        return self._send_pipe_request("get_cities", request_id=request_id)
 
-    def _get_diplomacy_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
+    def _get_units(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Get information about units from DLL."""
+        # player_id = args.get("player_id")  # Reserved for future filtering
+        return self._send_pipe_request("get_units", request_id=request_id)
 
-    def _get_available_choices_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
-
-    def _get_victory_progress_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
-
-    def _get_resources_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
-
-    def _get_state_refresh_dummy(self) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
-
-    def _get_notifications(self) -> dict[str, Any]:
-        """Get notifications from the log.
-
-        Returns notifications in the same format as they appear in the log,
-        ensuring parity between what's logged and what the LLM receives.
-        Filters by current game_id if available.
-        """
-        # Filter by current game_id if available
+    def _get_notifications(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Get notifications from the log (filtered by current game)."""
         game_id = self.current_game_id
-
         notifications = self._message_logger.get_messages(
-            message_type="notification",
-            game_id=game_id
+            message_type="notification", game_id=game_id
         )
         return {
-            "notifications": notifications,  # Same format as log entries
+            "notifications": notifications,
             "count": len(notifications),
             "game_id": game_id,
-            "session_id": self.current_session_id
+            "session_id": self.current_session_id,
+            "player_id": self.current_player_id,
+            "request_id": request_id,
         }
-
-    def _get_player_status_dummy(self, player_id: Optional[int] = None) -> dict[str, Any]:
-        """Dummy response - will be replaced with DLL call."""
-        return {"message": "Dummy response - state caching removed, will query DLL directly"}
     
-    def _get_log(
-        self,
-        message_type: Optional[str] = None,
-        direction: Optional[str] = None,
-        min_turn: Optional[int] = None,
-        player_id: Optional[int] = None,
-        game_id: Optional[int] = None,
-        session_id: Optional[int] = None,
-        current_game_only: bool = True,
-        limit: int = 100
-    ) -> dict[str, Any]:
+    def _get_log(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
         """Get log entries from the JSONL log with optional filters.
 
-        Returns messages in the same format as they appear in the log,
-        ensuring parity between what's logged and what the LLM receives.
-
         Args:
-            message_type: Optional message type to filter by (e.g., 'note', 'turn_start', 'notification')
-            direction: Optional direction filter ('incoming' or 'outgoing')
-            min_turn: Optional minimum turn number
-            player_id: Optional player ID filter
-            game_id: Optional game ID filter (overrides current_game_only)
-            session_id: Optional session ID filter
-            current_game_only: If True and no game_id specified, filter by current game (default True)
-            limit: Maximum number of messages to return (default 100, max 1000)
+            request_id: Request ID for this tool call (used in response)
+            args: Tool arguments containing optional filters:
+                - message_type: Filter by type (e.g., 'note', 'turn_start')
+                - direction: Filter by 'incoming' or 'outgoing'
+                - turn_number: Minimum turn number
+                - player_id, game_id, session_id: ID filters
+                - current_game_only: If True, filter to current game (default True)
+                - limit: Max messages to return (default 100, max 1000)
 
         Returns:
             Dictionary with 'messages' list and 'count'
         """
-        # Cap limit at 1000 to prevent excessive memory usage
-        limit = min(limit, 1000)
+        message_type = args.get("message_type")
+        direction = args.get("direction")
+        turn_number = args.get("turn_number")
+        player_id = args.get("player_id")
+        game_id = args.get("game_id")
+        session_id = args.get("session_id")
+        current_game_only = args.get("current_game_only", True)
+        limit = min(args.get("limit", 100), 1000)
 
-        # If current_game_only and no explicit game_id, use current game
+        # Default to current game if not specified
         if current_game_only and game_id is None:
             game_id = self.current_game_id
 
-        # Get messages from logger
-        messages = self._message_logger.get_messages(
-            message_type=message_type,
-            min_turn=min_turn,
-            player_id=player_id,
-            game_id=game_id,
-            session_id=session_id
-        )
-
-        # Filter by direction if specified
-        if direction:
-            messages = [msg for msg in messages if msg.get("direction") == direction]
-
-        # If retrieving notes, filter out deleted ones
+        # Special handling for 'note' type - notes are tool_call entries with tool="add_note"
         if message_type == "note":
-            # Get all note_deleted entries (don't filter by game_id/session_id since deletions
-            # should work across games/sessions - note_id is globally unique)
-            deleted_notes = self._message_logger.get_messages(
-                message_type="note_deleted"
+            all_messages = self._message_logger.get_messages(
+                message_type="tool_call",
+                turn_number=turn_number,
+                player_id=player_id,
+                game_id=game_id,
+                session_id=session_id,
             )
-            deleted_note_ids = {msg.get("note_id") for msg in deleted_notes if msg.get("note_id")}
-            
-            # Filter out notes that have been deleted
-            messages = [msg for msg in messages if msg.get("note_id") not in deleted_note_ids]
+            messages = [m for m in all_messages if m.get("tool") == "add_note"]
+        else:
+            messages = self._message_logger.get_messages(
+                message_type=message_type,
+                turn_number=turn_number,
+                player_id=player_id,
+                game_id=game_id,
+                session_id=session_id,
+            )
 
-        # Return most recent messages first, limited
+        if direction:
+            messages = [m for m in messages if m.get("direction") == direction]
+
+        # Build set of deleted message UUIDs by scanning delete_message tool calls
+        all_tool_calls = self._message_logger.get_messages(
+            message_type="tool_call", game_id=game_id, session_id=session_id
+        )
+        deleted_uuids = set()
+        for tc in all_tool_calls: # TODO not how deleted logic works (deleted timestamp)
+            tool = tc.get("tool")
+            if tool in ("delete_message", "delete_note"):
+                deleted_id = tc.get("arguments", {}).get("message_id")
+                if deleted_id:
+                    deleted_uuids.add(deleted_id)
+
+        # Filter out deleted messages
+        messages = [m for m in messages if m.get("uuid") not in deleted_uuids]
+
+        # Most recent first, limited
         messages = list(reversed(messages))[:limit]
 
         return {
@@ -764,223 +633,45 @@ class CivMCPServer:
             "count": len(messages),
             "game_id": game_id,
             "session_id": self.current_session_id,
-            "filters": {
-                "message_type": message_type,
-                "direction": direction,
-                "min_turn": min_turn,
-                "player_id": player_id,
-                "game_id": game_id,
-                "session_id": session_id,
-                "current_game_only": current_game_only,
-                "limit": limit
-            }
+            "request_id": request_id,
         }
     
-    def _send_action_with_confirmation(
-        self,
-        action: dict[str, Any],
-        delay_seconds: float = 0.5,
-        query_type: str = "units"
-    ) -> dict[str, Any]:
-        """Send an action and then query game state after a delay to confirm execution.
-        
-        This is useful for actions like unit moves where you want to verify the unit
-        actually moved to the expected location.
-        
-        Args:
-            action: Action dictionary to send
-            delay_seconds: How long to wait before querying state (default 0.5)
-            query_type: What to query after delay - "units" or "state" (default "units")
-            
-        Returns:
-            Dictionary with action send status and query results
-        """
-        # Send the action (non-blocking)
-        send_result = self._send_action(action)
-        
-        if "error" in send_result:
-            return send_result
-        
-        # Wait for the delay
-        time.sleep(delay_seconds)
-        
-        # Query state based on query_type (dummy responses for now)
-        query_result = {}
-        if query_type == "units":
-            # Get units to check if move happened
-            units_result = self._get_units_dummy()
-            query_result = {
-                "query_type": "units",
-                "units": units_result
-            }
-        elif query_type == "state":
-            # Get full game state
-            state_result = self._get_game_state_dummy()
-            query_result = {
-                "query_type": "state",
-                "state": state_result
-            }
-        else:
-            query_result = {
-                "error": f"Unknown query_type: {query_type}. Use 'units' or 'state'"
-            }
-        
-        return {
-            "action_sent": send_result,
-            "confirmation_query": query_result,
-            "delay_seconds": delay_seconds
-        }
-    
-    def _ping(self) -> dict[str, Any]:
-        """Ping the DLL to check connectivity and get server status.
-        
-        Sends a ping message to the DLL via the pipe connection and waits for a pong response.
-        
-        Returns:
-            Dictionary with DLL response (pong), server status, timestamp, and turn information
-        """
+    def _ping(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Ping the DLL to check connectivity and get server status."""
+        result = self._send_pipe_request("ping", request_id=request_id)
+
         with self._lock:
-            pipe_conn = self._pipe_conn
-            turn_number = self._current_turn_number
-            action_count = self._action_count
-            action_errors = self._action_errors
-        
-        if not pipe_conn:
-            return {
-                "error": "Cannot ping - no pipe connection available",
-                "status": "error"
+            stats = {
+                "turn_number": self._current_turn_number,
+                "action_count": self._action_count,
+                "action_errors": self._action_errors,
             }
-        
-        if not pipe_conn:
+
+        if result.get("type") == "pong":
             return {
-                "error": "No pipe connection available",
-                "status": "error"
-            }
-        
-        # Send ping message to DLL
-        ping_message = {
-            "type": "ping",
-            "request_id": str(uuid.uuid4())
-        }
-        
-        # Log outgoing ping message to JSONL (before sending)
-        log_ping = ping_message.copy()
-        log_ping["direction"] = "outgoing"
-        self._message_logger.log_message(log_ping)
-        
-        try:
-            # Use send_request to send ping and wait for pong response
-            # send_request will use our request_id (it only generates one if missing)
-            result = pipe_conn.send_request(ping_message, timeout=5.0)
-            
-            # Check if we got a pong response
-            if result.get("type") == "pong":
-                return {
-                    "status": "ok",
-                    "server": "civ5-mcp",
-                    "dll_response": "pong",
-                    "timestamp": time.time(),
-                    "turn_number": turn_number,
-                    "action_count": action_count,
-                    "action_errors": action_errors,
-                    "message": "Pong! DLL is responding.",
-                    "request_id": result.get("request_id")
-                }
-            elif "error" in result:
-                return {
-                    "status": "error",
-                    "error": result.get("error"),
-                    "message": "Failed to ping DLL",
-                    "timestamp": time.time(),
-                    "turn_number": turn_number
-                }
-            else:
-                return {
-                    "status": "unknown",
-                    "dll_response": result,
-                    "message": "Received unexpected response from DLL",
-                    "timestamp": time.time(),
-                    "turn_number": turn_number
-                }
-        except Exception as e:
-            logger.error(f"Exception during ping: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "error": f"Failed to ping DLL: {e}",
+                "status": "ok",
+                "server": "civ5-mcp",
+                "dll_response": "pong",
                 "timestamp": time.time(),
-                "turn_number": turn_number
+                **stats,
             }
+        return {"status": "error", "error": result.get("error", "Unexpected response")}
     
-    def _add_note(self, content: str) -> dict[str, Any]:
-        """Add a note to the JSONL log.
-        
-        Args:
-            content: The note content to log
-            
-        Returns:
-            Dictionary with status, confirmation, and note_id
-        """
-        from datetime import datetime
-        
-        # Generate unique ID for the note
-        note_id = str(uuid.uuid4())
-        
-        # Create note log entry
-        note_log = {
-            "type": "note",
-            "direction": "outgoing",
-            "timestamp": datetime.now().timestamp(),
-            "note_id": note_id,
-            "content": content
-        }
-        
-        # Add turn if available
-        with self._lock:
-            if self._current_turn_number is not None:
-                note_log["turn"] = self._current_turn_number
-        
-        # Log to JSONL
-        self._message_logger.log_message(note_log)
-        
-        logger.debug(f"Note logged ({len(content)} characters, note_id={note_id})")
+    def _add_note(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Add a note. Content is captured in the tool_call log entry."""
+        content = self._require_param(args, "content", str)
         return {
             "status": "success",
-            "message": "Note logged",
-            "note_id": note_id,
-            "content_length": len(content)
+            "content_length": len(content),
+            "request_id": request_id,
         }
-    
-    def _delete_note(self, note_id: str) -> dict[str, Any]:
-        """Delete a note by logging a deletion entry.
-        
-        Args:
-            note_id: The unique ID of the note to delete
-            
-        Returns:
-            Dictionary with status and confirmation
-        """
-        from datetime import datetime
-        
-        # Create deletion log entry
-        deletion_log = {
-            "type": "note_deleted",
-            "direction": "outgoing",
-            "timestamp": datetime.now().timestamp(),
-            "note_id": note_id
-        }
-        
-        # Add turn if available
-        with self._lock:
-            if self._current_turn_number is not None:
-                deletion_log["turn"] = self._current_turn_number
-        
-        # Log to JSONL
-        self._message_logger.log_message(deletion_log)
-        
-        logger.debug(f"Note deletion logged (note_id={note_id})")
+
+    def _delete_message(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Mark a message (or note) as deleted by its uuid. Deletion is recorded in the tool_call log."""
+        message_id = self._require_param(args, "message_id", str)
         return {
             "status": "success",
-            "message": "Note deleted",
-            "note_id": note_id
+            "message_id": message_id,
+            "request_id": request_id,
         }
     

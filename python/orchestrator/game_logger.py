@@ -2,13 +2,22 @@
 
 import json
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import logging
+# Module-level singleton instance
+_instance: Optional["GameLogger"] = None
+_instance_lock = threading.Lock()
 
-logger = logging.getLogger(__name__)
+
+def get_game_logger() -> "GameLogger":
+    """Get the singleton GameLogger instance."""
+    global _instance
+    if _instance is None:
+        with _instance_lock:
+            if _instance is None:
+                _instance = GameLogger()
+    return _instance
 
 
 class GameLogger:
@@ -44,8 +53,13 @@ class GameLogger:
         
         # Add timestamp if not present
         if "timestamp" not in msg_copy:
-            msg_copy["timestamp"] = datetime.now().timestamp()
-        
+            from datetime import datetime
+            msg_copy["timestamp"] = datetime.now().isoformat()
+
+        if "uuid" not in msg_copy:
+            from uuid import uuid4
+            msg_copy["uuid"] = str(uuid4())
+
         with self._lock:
             with open(self.messages_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(msg_copy) + "\n")
@@ -53,7 +67,7 @@ class GameLogger:
     def get_messages(
         self,
         message_type: Optional[str] = None,
-        min_turn: Optional[int] = None,
+        turn_number: Optional[int] = None,
         player_id: Optional[int] = None,
         game_id: Optional[int] = None,
         session_id: Optional[int] = None
@@ -62,7 +76,7 @@ class GameLogger:
 
         Args:
             message_type: Optional message type to filter by (e.g., "notification", "turn_start")
-            min_turn: Optional minimum turn number to filter by
+            turn_number: Optional turn number to filter by
             player_id: Optional player ID to filter by
             game_id: Optional game ID to filter by (from mapRandomSeed, persists across saves)
             session_id: Optional session ID to filter by (changes on each pipe connection)
@@ -81,8 +95,8 @@ class GameLogger:
                             continue
                         try:
                             messages.append(json.loads(line))
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse message line: {e}")
+                        except json.JSONDecodeError:
+                            pass  # Skip malformed lines
             
             # Filter messages
             filtered = []
@@ -94,9 +108,9 @@ class GameLogger:
                         continue
                 
                 # Filter by turn
-                if min_turn is not None:
+                if turn_number is not None:
                     msg_turn = msg.get("turn")
-                    if msg_turn is not None and msg_turn < min_turn:
+                    if msg_turn is not None and msg_turn < turn_number:
                         continue
                 
                 # Filter by player

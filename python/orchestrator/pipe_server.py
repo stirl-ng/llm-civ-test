@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import ctypes
 import json
-import logging
 import queue
 import threading
 import time
 import uuid
 from ctypes import wintypes
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .message_validator import MessageValidator
+
+if TYPE_CHECKING:
+    from .mcp_server import CivMCPServer
 
 
 LPSECURITY_ATTRIBUTES = ctypes.c_void_p
@@ -91,12 +93,19 @@ class PipeConnection:
 
     Allows the HTTP thread to send actions and receive responses
     while the pipe thread waits.
+
+    NOTE: Multiplayer considerations
+    =================================
+    Currently designed for single-client use. The request_id-based response
+    routing works for one client, but for simultaneous multiplayer we'd need:
+    1. Client/session identification in request_id or separate routing mechanism
+    2. Per-client response queues to prevent cross-client response delivery
+    3. Consider async architecture if multiple clients need concurrent access
     """
 
     def __init__(self, handle: int):
         self._handle = handle
         self._lock = threading.Lock()
-        self._log = logging.getLogger(__name__)
         self._buf = (ctypes.c_char * WinAPI.BUFSIZE)()
         # Response waiting mechanism for synchronous requests
         self._pending_responses: dict[str, queue.Queue[dict[str, Any]]] = {}
@@ -117,10 +126,8 @@ class PipeConnection:
             
         try:
             with self._lock:
-                self._log.info(f"📤 Outgoing to DLL: action: {action}")
                 message = json.dumps(action).encode("utf-8") + b"\n"
                 if not self._write(message):
-                    self._log.error("Failed to write action to pipe")
                     return {"error": "Pipe write failed", "status": "failed", "action": action}
             
             try:
@@ -128,23 +135,24 @@ class PipeConnection:
                 response = q.get(timeout=timeout)
                 return response
             except queue.Empty:
-                self._log.warning(f"Timeout waiting for action_result (request_id: {request_id})")
                 return {"error": "Timeout waiting for response", "status": "timeout", "action": action}
         finally:
             with self._response_lock:
                 self._pending_responses.pop(request_id, None)
 
-    def send_end_turn(self, turn: Optional[int] = None, timeout: float = 15.0) -> dict[str, Any]:
+    def send_end_turn(self, turn: Optional[int] = None, request_id: Optional[str] = None, timeout: float = 15.0) -> dict[str, Any]:
         """Send end_turn signal to DLL and wait for end_turn_result.
         
         Args:
             turn: Optional turn number to include in the message
+            request_id: Optional request ID for request/response matching (generated if not provided)
             timeout: Max seconds to wait for authoritative response
             
         Returns:
             The end_turn_result message from DLL
         """
-        request_id = str(uuid.uuid4())
+        if request_id is None:
+            request_id = str(uuid.uuid4())
         msg = {"type": "end_turn", "request_id": request_id}
         if turn is not None:
             msg["turn"] = turn
@@ -159,7 +167,6 @@ class PipeConnection:
 
         try:
             with self._lock:
-                self._log.info(f"📤 Outgoing to DLL: end_turn: {msg}")
                 message = json.dumps(msg).encode("utf-8") + b"\n"
                 if not self._write(message):
                     return {"type": "end_turn_result", "status": "error", "error": "Pipe write failed"}
@@ -169,7 +176,6 @@ class PipeConnection:
                 response = q.get(timeout=timeout)
                 return response
             except queue.Empty:
-                self._log.warning(f"Timeout waiting for end_turn_result")
                 return {"type": "end_turn_result", "status": "timeout"}
         finally:
             with self._response_lock:
@@ -197,10 +203,8 @@ class PipeConnection:
             
         try:
             with self._lock:
-                self._log.info(f"📤 Outgoing to DLL: request: {request}")
                 message = json.dumps(request).encode("utf-8") + b"\n"
                 if not self._write(message):
-                    self._log.error("Failed to write request to pipe")
                     return {"error": "Pipe write failed", "status": "failed", "request": request}
             
             try:
@@ -248,8 +252,6 @@ class PipeConnection:
         bytes_written = wintypes.DWORD(0)
         ok = WinAPI.WriteFile(self._handle, data, len(data), ctypes.byref(bytes_written), None)
         if not ok or bytes_written.value != len(data):
-            err = ctypes.get_last_error()
-            self._log.error(f"Pipe write failed: {err}")
             return False
         # Flush to ensure data is actually transmitted to the client
         WinAPI.FlushFileBuffers(self._handle)
@@ -261,7 +263,6 @@ class PipeConnection:
         if not ok:
             err = ctypes.get_last_error()
             if err != WinAPI.ERROR_MORE_DATA:
-                self._log.error(f"Pipe read failed: {err}")
                 return None
         if bytes_read.value == 0:
             return None
@@ -270,122 +271,79 @@ class PipeConnection:
 
 # Callback type: receives state dict and pipe connection for sending actions
 OnTurnStart = Callable[[dict[str, Any], PipeConnection], None]
+# Callback type: called when turn completes (no parameters needed)
+OnTurnComplete = Callable[[], None]
 
 
 class StateProcessor:
-    """Processes incoming state messages with validation and persistence."""
+    """Processes incoming messages from DLL - validates, logs, and routes to CivMCPServer."""
 
-    def __init__(self):
-        """Initialize state processor."""
+    def __init__(self, mcp_server: Optional["CivMCPServer"] = None):
+        """Initialize state processor.
+
+        Args:
+            mcp_server: CivMCPServer instance for turn management (holds all state)
+        """
         self.validator = MessageValidator()
         self._last_state: Optional[dict[str, Any]] = None
-        self._log = logging.getLogger(__name__)
+        self.mcp_server = mcp_server
 
-        # Session tracking - game_id persists across saves, session_id changes on each connection
-        self._current_game_id: Optional[int] = None
-        self._current_session_id: Optional[int] = None
-
-    @property
-    def current_game_id(self) -> Optional[int]:
-        """Get the current game ID (map random seed, persists across saves)."""
-        return self._current_game_id
-
-    @property
-    def current_session_id(self) -> Optional[int]:
-        """Get the current session ID (changes on each pipe connection)."""
-        return self._current_session_id
-    
     def process_state(
         self,
         state: dict[str, Any],
-        on_turn_start: OnTurnStart,
         pipe_conn: PipeConnection
     ) -> None:
-        """Process an incoming state message.
-        
+        """Process an incoming message from DLL.
+
+        Routes responses to waiting requests, logs everything, validates,
+        and calls mcp_server on turn events.
+
         Args:
-            state: State dictionary from DLL
-            on_turn_start: Callback to handle turn start
-            pipe_conn: Pipe connection for this turn
+            state: Message dictionary from DLL
+            pipe_conn: Pipe connection for this session
         """
         msg_type = state.get("type", "unknown")
-        
-        # Handle response messages (player_status_result, units_result, action_result, pong, etc.)
-        # These need to be delivered to waiting requests
-        if msg_type in ("player_status_result", "units_result", "action_result", "pong") or msg_type.endswith("_result"):
+
+        # Handle response messages - deliver to waiting requests
+        if msg_type in ("player_status_result", "units_result", "action_result", "pong", "state_refresh") or msg_type.endswith("_result"):
             if pipe_conn.deliver_response(state):
-                # Response was delivered to a waiting request
                 return
-            # If no waiting request, log and skip (response messages aren't state updates)
-            self._log.debug(f"Received {msg_type} response with no waiting request")
             return
-        
+
         # Handle error responses
         if msg_type == "error" and "request_id" in state:
             if pipe_conn.deliver_response(state):
-                # Error response was delivered to a waiting request
                 return
-            # If no waiting request, log and skip
-            self._log.debug(f"Received error response with no waiting request: {state.get('message')}")
             return
-        
-        # Extract game_id and session_id from turn_start messages
-        if msg_type == "turn_start":
-            new_game_id = state.get("game_id")
-            new_session_id = state.get("session_id")
-
-            # Detect game change
-            if self._current_game_id is not None and new_game_id != self._current_game_id:
-                self._log.info(
-                    f"New game detected! game_id changed from {self._current_game_id} to {new_game_id}"
-                )
-                # Could clear in-memory caches, rotate logs, etc. here
-
-            # Detect session change (reconnect)
-            if self._current_session_id is not None and new_session_id != self._current_session_id:
-                self._log.info(
-                    f"New session detected! session_id changed from {self._current_session_id} to {new_session_id}"
-                )
-
-            self._current_game_id = new_game_id
-            self._current_session_id = new_session_id
 
         # Log EVERYTHING from DLL to JSONL file
-        # Import here to avoid circular dependency
-        from .game_logger import GameLogger
-
-        # Get or create game logger (simple singleton pattern)
-        if not hasattr(self, "_message_logger"):
-            self._message_logger = GameLogger()
-
-        # Just push everything we get from DLL (mark as incoming)
+        import uuid
+        from .game_logger import get_game_logger
+        log_uuid = str(uuid.uuid4())
         log_msg = state.copy()
+        log_msg["uuid"] = log_uuid
+        log_msg["request_id"] = state.get("request_id", log_uuid)  # Use existing or new
         log_msg["direction"] = "incoming"
-        self._message_logger.log_message(log_msg)
-        
-        # Handle game notifications and trace from DLL (return early, don't process as state)
+        get_game_logger().log_message(log_msg)
+
+        # Notifications and trace don't need further processing
         if msg_type in ("game_notification", "notification", "trace"):
-            return  # Don't process as a state message
-        
+            return
+
         # Validate message
         is_valid, error_msg = self.validator.validate_message(state)
-        
         if not is_valid:
-            self._log.error(f"Message validation failed: {error_msg}")
             return
-        
-        # Check consistency with previous turn_start message
+
+        # Check consistency with previous turn_start
         if self._last_state:
             is_consistent, warning = self.validator.check_turn_consistency(self._last_state, state)
-            if not is_consistent:
-                self._log.warning(f"Turn consistency issue: {warning}")
-        
-        # Update last state
+
         self._last_state = state
-        
-        # Call the turn start handler
-        if msg_type == "turn_start":
-            on_turn_start(state, pipe_conn)
+
+        # Route turn events to mcp_server
+        if msg_type == "turn_start" and self.mcp_server:
+            self.mcp_server.start_turn(state, pipe_conn)
 
 
 class NamedPipeServer:
@@ -393,29 +351,27 @@ class NamedPipeServer:
 
     When DLL sends a turn_start message:
     1. Parses the state
-    2. Calls on_turn_start(state, pipe_connection) in a separate thread
-    3. Handler can use pipe_connection to send actions and receive responses
-    4. Pipe reading continues immediately, allowing new messages to be processed
+    2. Handler can use pipe_connection to send actions and receive responses
+    3. Pipe reading continues immediately, allowing new messages to be processed
     """
 
     def __init__(
         self,
         pipe_name: str,
-        on_turn_start: OnTurnStart
+        mcp_server: Optional["CivMCPServer"] = None
     ):
         if not pipe_name.startswith("\\\\.\\pipe\\"):
             raise ValueError("pipe_name must start with \\\\.\\pipe\\")
         self.pipe_name = pipe_name
-        self.on_turn_start = on_turn_start
+        self.mcp_server = mcp_server
         self._running = False
-        self._log = logging.getLogger(__name__)
         self._handle: Optional[int] = None
         self._current_handler_thread: Optional[threading.Thread] = None
         self._handler_lock = threading.Lock()
-        
-        # State processing
-        self.state_processor = StateProcessor()
 
+        # State processing - pass mcp_server for turn management
+        self.state_processor = StateProcessor(mcp_server=mcp_server)
+        
     def start(self) -> None:
         if self._running:
             return
@@ -469,17 +425,14 @@ class NamedPipeServer:
         while self._running:
             try:
                 h = self._create()
-                self._log.info(f"Waiting for client on {self.pipe_name}...")
                 ok = WinAPI.ConnectNamedPipe(h, None)
                 if not ok:
                     err = ctypes.get_last_error()
                     if err != WinAPI.ERROR_PIPE_CONNECTED:
-                        self._log.error(f"ConnectNamedPipe failed: {err}")
                         self._close()
                         continue
                 mode = wintypes.DWORD(WinAPI.PIPE_READMODE_MESSAGE)
                 WinAPI.SetNamedPipeHandleState(h, ctypes.byref(mode), None, None)
-                self._log.info("Client connected")
 
                 self._client_loop(h)
             finally:
@@ -495,8 +448,6 @@ class NamedPipeServer:
             # Non-blocking peek to check if data is available
             # This allows writes from other threads to proceed without blocking
             if not WinAPI.PeekNamedPipe(h, None, 0, None, ctypes.byref(bytes_avail), None):
-                err = ctypes.get_last_error()
-                self._log.info(f"Client disconnected or peek error: {err}")
                 break
 
             if bytes_avail.value == 0:
@@ -513,10 +464,8 @@ class NamedPipeServer:
                     chunk = bytes(buf[:bytes_read.value])
                     self._dispatch(chunk, pipe_conn)
                     continue
-                self._log.info(f"Client disconnected or read error: {err}")
                 break
             if bytes_read.value == 0:
-                self._log.info("Client closed pipe")
                 break
 
             data = bytes(buf[:bytes_read.value])
@@ -536,23 +485,13 @@ class NamedPipeServer:
                     if not decoded:
                         return
                     state = json.loads(decoded)
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    self._log.error(f"Failed to parse message: {e}, raw data: {msg_data[:100]!r}")
+                except (UnicodeDecodeError, json.JSONDecodeError):
                     return
 
-                # Log incoming message from DLL
-                msg_type = state.get("type", "unknown") if isinstance(state, dict) else "non-dict"
-                
-                # Trace messages are logged but not usually processed further
-                if msg_type == "trace":
-                    self._log.debug(f"📥 DLL Trace: {state.get('message', state)}")
-                else:
-                    self._log.info(f"📥 Incoming from DLL: {msg_type}: {state}")
-
                 # Process state (validation, persistence, notifications, and delivery to waiting sync requests)
-                self.state_processor.process_state(state, self.on_turn_start, pipe_conn)
-            except Exception as e:
-                self._log.error(f"Handler error: {e}", exc_info=True)
+                self.state_processor.process_state(state, pipe_conn)
+            except Exception:
+                pass
 
         def run_handler_pool():
             # Split data by newlines in case multiple messages arrived together

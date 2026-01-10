@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from typing import Optional
 
-from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
+from .mcp_server import CivMCPServer
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +47,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json({"status": "ok", "server": "civ5-mcp"})
 
-        elif self.path == "/state":
-            state = self.mcp_server.current_state or {}
-            turn_active = self.mcp_server.turn_active
-            turn_num = self.mcp_server.turn_number
-            self._send_json({
-                "turn_active": turn_active,
-                "turn": turn_num,
-                "state": state
-            })
+        elif self.path == "/about":
+            about = self.mcp_server.get_about()
+            self._send_json({"about": about})
 
         elif self.path == "/tools":
-            self._send_json({"tools": AVAILABLE_TOOLS})
+            tools = self.mcp_server.get_tools()
+            self._send_json({"tools": tools})
+
         elif self.path == "/stats":
             stats = self.mcp_server.get_action_stats()
             self._send_json({"stats": stats})
+
         else:
             self._send_error(404, "Not found")
 
@@ -114,30 +111,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_error(400, "Missing 'tool' field")
             return
 
-        # Note: Tool call logging is handled in mcp_server.execute_tool()
-        # to ensure it happens before execution and includes turn context
-        try:
-            result = self.mcp_server.execute_tool(tool_name, arguments)
+        result = self.mcp_server.execute_tool(tool_name, arguments)
+        
+        # Check if result indicates an error
+        if result.get("status") == "error" or "error" in result:
+            self._send_json({"status": "error", "result": result}, status=500)
+        else:
             self._send_json({"status": "success", "result": result})
-        except Exception as e:
-            logger.error(f"Tool execution error: {e}", exc_info=True)
-            # Log error result to LLM
-            from .game_logger import GameLogger
-            from datetime import datetime
-            error_log = {
-                "type": f"tool_result_{tool_name}",
-                "direction": "incoming",
-                "timestamp": datetime.now().timestamp(),
-                "tool": tool_name,
-                "result": {"error": str(e), "status": "error"}
-            }
-            # Add turn if available
-            if self.mcp_server.turn_number is not None:
-                error_log["turn"] = self.mcp_server.turn_number
-            game_logger = GameLogger()
-            game_logger.log_message(error_log)
-            
-            self._send_json({"status": "error", "error": str(e)}, status=500)
 
     def _send_json(self, data: dict, status: int = 200):
         """Send JSON response."""
@@ -153,28 +133,28 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
 
 class MCPHTTPServer:
-    """HTTP server wrapper for MCP server.
+    """HTTP server that exposes CivMCPServer tools via HTTP.
 
-    The orchestrator accesses mcp_server directly to manage turns.
-    HTTP handlers use mcp_server to execute tool calls.
+    This is just a thin HTTP layer - the actual logic lives in CivMCPServer.
     """
 
     def __init__(
         self,
         host: str = "localhost",
         port: int = 8765,
-        turn_timeout: float = 300.0
+        mcp_server: Optional[CivMCPServer] = None
     ):
         self.host = host
         self.port = port
-        self.mcp_server = CivMCPServer(
-            turn_timeout=turn_timeout
-        )
+        self.mcp_server = mcp_server
         self.http_server: Optional[HTTPServer] = None
         self.thread: Optional[Thread] = None
 
     def start(self):
         """Start the HTTP server in a background thread."""
+        if self.mcp_server is None:
+            raise RuntimeError("MCPHTTPServer requires an mcp_server instance")
+
         MCPHTTPHandler.mcp_server = self.mcp_server
 
         self.http_server = HTTPServer((self.host, self.port), MCPHTTPHandler)
@@ -182,7 +162,7 @@ class MCPHTTPServer:
         self.thread.start()
 
         logger.info(f"MCP HTTP Server started on http://{self.host}:{self.port}")
-        logger.info(f"Endpoints: GET /health, GET /state, GET /tools, GET /stats, POST /tool")
+        logger.info(f"Endpoints: GET /health, GET /tools, GET /stats, POST /tool")
 
     def stop(self):
         """Stop the HTTP server."""
@@ -193,7 +173,9 @@ class MCPHTTPServer:
 
 def run_http_server(host: str = "localhost", port: int = 8765):
     """Run the MCP HTTP server standalone (for testing)."""
-    server = MCPHTTPServer(host, port)
+    # Create a standalone CivMCPServer for testing
+    mcp_server = CivMCPServer(turn_timeout=300.0)
+    server = MCPHTTPServer(host, port, mcp_server=mcp_server)
     server.start()
 
     print(f"MCP HTTP Server running on http://{host}:{port}")

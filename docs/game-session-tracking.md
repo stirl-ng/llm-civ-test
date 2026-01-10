@@ -112,7 +112,7 @@ class StateProcessor:
 def get_messages(
     self,
     message_type: Optional[str] = None,
-    min_turn: Optional[int] = None,
+    turn_number: Optional[int] = None,
     player_id: Optional[int] = None,
     game_id: Optional[int] = None,      # NEW
     session_id: Optional[int] = None,   # NEW
@@ -121,7 +121,7 @@ def get_messages(
 
     Args:
         message_type: Optional message type to filter by
-        min_turn: Optional minimum turn number
+        turn_number: Optional minimum turn number
         player_id: Optional player ID to filter by
         game_id: Optional game ID to filter by (from mapRandomSeed)
         session_id: Optional session ID to filter by
@@ -163,7 +163,7 @@ def api_messages():
     """Get messages from JSONL log with optional filters."""
     message_type = request.args.get("type")
     direction = request.args.get("direction")
-    min_turn = request.args.get("min_turn", type=int)
+    turn_number = request.args.get("turn_number", type=int)
     game_id = request.args.get("game_id", type=int)        # NEW
     session_id = request.args.get("session_id", type=int)  # NEW
     current_game_only = request.args.get("current_game", type=bool, default=True)  # NEW
@@ -175,7 +175,7 @@ def api_messages():
 
     messages = game_logger.get_messages(
         message_type=message_type,
-        min_turn=min_turn,
+        turn_number=turn_number,
         game_id=game_id,
         session_id=session_id,
         limit=limit

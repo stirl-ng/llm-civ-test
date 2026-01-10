@@ -247,6 +247,72 @@ commands:
       UNIT_NOT_OWNED:
         description: Unit does not belong to active player
 
+  unit_found_city:
+    description: Found a city with a settler unit at its current location
+    request:
+      type: unit_found_city
+      request_id: { type: string, required: true }
+      unit_id: { type: int, required: true }
+    response:
+      type: unit_found_city_result
+      request_id: { type: string }
+      success: { type: bool }
+      result:
+        message: { type: string }
+      state_delta:
+        unit_id: { type: int }
+        x: { type: int }
+        y: { type: int }
+    errors:
+      UNIT_NOT_FOUND:
+        description: Unit with given ID not found
+      UNIT_NOT_OWNED:
+        description: Unit does not belong to active player
+      CANNOT_FOUND_CITY:
+        description: Unit cannot found a city at this location
+
+  unit_sleep:
+    description: Set a unit to sleep/fortify (defensive stance)
+    request:
+      type: unit_sleep
+      request_id: { type: string, required: true }
+      unit_id: { type: int, required: true }
+    response:
+      type: unit_sleep_result
+      request_id: { type: string }
+      success: { type: bool }
+      result:
+        message: { type: string }
+      state_delta:
+        unit_id: { type: int }
+        activity: { type: string, description: "Always 'sleep'" }
+    errors:
+      UNIT_NOT_FOUND:
+        description: Unit with given ID not found
+      UNIT_NOT_OWNED:
+        description: Unit does not belong to active player
+
+  unit_skip:
+    description: Set a unit to skip/hold (skip turn without fortifying)
+    request:
+      type: unit_skip
+      request_id: { type: string, required: true }
+      unit_id: { type: int, required: true }
+    response:
+      type: unit_skip_result
+      request_id: { type: string }
+      success: { type: bool }
+      result:
+        message: { type: string }
+      state_delta:
+        unit_id: { type: int }
+        activity: { type: string, description: "Always 'skip'" }
+    errors:
+      UNIT_NOT_FOUND:
+        description: Unit with given ID not found
+      UNIT_NOT_OWNED:
+        description: Unit does not belong to active player
+
   # ---------------------------------------------------------------------------
   # City Queries
   # ---------------------------------------------------------------------------

@@ -220,7 +220,7 @@ def _get_notifications(self) -> dict[str, Any]:
     "parameters": {
         "message_type": "optional string",
         "direction": "optional string",
-        "min_turn": "optional int",
+        "turn_number": "optional int",
         "limit": "optional int (default 100)"
     }
 }
@@ -264,12 +264,12 @@ Add endpoint for JSONL log:
 def api_messages():
     message_type = request.args.get("type")
     direction = request.args.get("direction")
-    min_turn = request.args.get("min_turn", type=int)
+    turn_number = request.args.get("turn_number", type=int)
     limit = int(request.args.get("limit", 100))
 
     messages = game_logger.get_messages(
         message_type=message_type,
-        min_turn=min_turn,
+        turn_number=turn_number,
         limit=limit
     )
 

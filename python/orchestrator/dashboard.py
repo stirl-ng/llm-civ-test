@@ -8,156 +8,13 @@ Provides a web interface for:
 """
 
 import json
-import logging
-import os
 import re
-from collections import deque
 from datetime import datetime
-from pathlib import Path
-from threading import Lock
 from typing import Optional
 
-from flask import Flask, Response, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request
 
-from .mcp_server import AVAILABLE_TOOLS, CivMCPServer
-
-# In-memory log buffer for real-time viewing
-LOG_BUFFER_SIZE = 1000
-_log_buffer: deque = deque(maxlen=LOG_BUFFER_SIZE)
-_log_lock = Lock()
-
-
-class DashboardLogHandler(logging.Handler):
-    """Custom log handler that stores logs in memory for the dashboard."""
-
-    def emit(self, record: logging.LogRecord):
-        try:
-            # Try to extract player_id from the message
-            player_id = None
-            raw_msg = record.getMessage()
-            
-            # Try to extract player_id from the message
-            # Messages from DLL often contain JSON with player_id field
-            # Use regex to find "player_id": <number> pattern (works for both single-line and multi-line JSON)
-            try:
-                match = re.search(r'"player_id"\s*:\s*(\d+)', raw_msg)
-                if match:
-                    player_id = int(match.group(1))
-            except (ValueError, AttributeError):
-                pass
-            
-            log_entry = {
-                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
-                "level": record.levelname,
-                "logger": record.name,
-                "message": self.format(record),
-                "raw_message": raw_msg,
-                "player_id": player_id,
-            }
-            with _log_lock:
-                _log_buffer.append(log_entry)
-        except Exception:
-            self.handleError(record)
-
-
-def setup_dashboard_logging():
-    """Add the dashboard log handler to capture logs."""
-    handler = DashboardLogHandler()
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-
-    # Add to root logger only - child loggers propagate up
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-
-
-def get_logs(
-    level_filter: Optional[str] = None,
-    text_filter: Optional[str] = None,
-    player_id_filter: Optional[int] = None,
-    limit: int = 100,
-) -> list[dict]:
-    """Get logs from buffer with optional filtering."""
-    with _log_lock:
-        logs = list(_log_buffer)
-
-    # Apply filters
-    if level_filter and level_filter != "ALL":
-        logs = [log for log in logs if log["level"] == level_filter]
-
-    if text_filter:
-        pattern = re.compile(re.escape(text_filter), re.IGNORECASE)
-        logs = [log for log in logs if pattern.search(log["message"])]
-
-    if player_id_filter is not None:
-        logs = [log for log in logs if log.get("player_id") == player_id_filter]
-
-    # Return most recent first, limited
-    return list(reversed(logs))[:limit]
-
-
-def read_log_file(limit: int = 500) -> list[dict]:
-    """Read logs from the log file."""
-    log_path = Path(__file__).resolve().parents[1] / "logs" / "orchestrator.log"
-    logs = []
-
-    if not log_path.exists():
-        return logs
-
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()[-limit:]
-
-        for line in lines:
-            # Parse log format: [timestamp][level] message
-            match = re.match(r"\[([^\]]+)\]\[([^\]]+)\] (.+)", line.strip())
-            if match:
-                message = match.group(3)
-                # Try to extract player_id from message
-                player_id = None
-                player_id_match = re.search(r'"player_id"\s*:\s*(\d+)', message)
-                if player_id_match:
-                    try:
-                        player_id = int(player_id_match.group(1))
-                    except ValueError:
-                        pass
-                
-                logs.append({
-                    "timestamp": match.group(1),
-                    "level": match.group(2),
-                    "logger": "file",
-                    "message": message,
-                    "raw_message": message,
-                    "player_id": player_id,
-                })
-            elif line.strip():
-                # Try to extract player_id from unformatted line
-                player_id = None
-                player_id_match = re.search(r'"player_id"\s*:\s*(\d+)', line.strip())
-                if player_id_match:
-                    try:
-                        player_id = int(player_id_match.group(1))
-                    except ValueError:
-                        pass
-                
-                logs.append({
-                    "timestamp": "",
-                    "level": "INFO",
-                    "logger": "file",
-                    "message": line.strip(),
-                    "raw_message": line.strip(),
-                    "player_id": player_id,
-                })
-    except Exception as e:
-        logs.append({
-            "timestamp": datetime.now().isoformat(),
-            "level": "ERROR",
-            "logger": "dashboard",
-            "message": f"Error reading log file: {e}",
-            "raw_message": str(e),
-        })
-
-    return logs
+from .mcp_server import CivMCPServer
 
 
 # HTML template for the dashboard
@@ -372,6 +229,53 @@ DASHBOARD_HTML = """
         .command-result.success {
             border-left: 3px solid #4ade80;
         }
+        /* Unit action panel */
+        .unit-action-panel {
+            background: #1a1a2e;
+            border-radius: 4px;
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .unit-action-panel select, .unit-action-panel input {
+            width: 100%;
+            background: #0f3460;
+            border: 1px solid #1a4b8c;
+            color: #eee;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .unit-action-panel select:disabled {
+            opacity: 0.5;
+        }
+        .unit-action-panel label {
+            display: block;
+            color: #888;
+            font-size: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+        .unit-info {
+            background: #0f3460;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+            font-size: 0.8rem;
+        }
+        .unit-info .unit-name {
+            color: #4ade80;
+            font-weight: 600;
+        }
+        .unit-info .unit-stats {
+            color: #888;
+            margin-top: 0.25rem;
+        }
+        .param-inputs {
+            margin: 0.5rem 0;
+        }
+        .param-inputs input {
+            margin-bottom: 0.25rem;
+        }
         /* State viewer */
         .state-summary {
             background: #1a1a2e;
@@ -459,56 +363,28 @@ DASHBOARD_HTML = """
                     </label>
                 </div>
             </div>
-            <div class="tabs">
-                <button class="tab active" onclick="switchTab('python')">Python Logs</button>
-                <button class="tab" onclick="switchTab('messages')">Message Log (JSONL)</button>
-            </div>
             <div class="panel-body">
-                <!-- Python Logs Tab -->
-                <div id="pythonTab" class="tab-content active">
-                    <div class="log-filters">
-                        <select id="levelFilter">
-                            <option value="ALL">All Levels</option>
-                            <option value="DEBUG">DEBUG</option>
-                            <option value="INFO">INFO</option>
-                            <option value="WARNING">WARNING</option>
-                            <option value="ERROR">ERROR</option>
-                        </select>
-                        <input type="text" id="textFilter" placeholder="Search logs...">
-                        <input type="number" id="playerIdFilter" placeholder="Player ID" min="0" style="width: 120px;">
-                        <button onclick="refreshLogs()">Refresh</button>
-                        <button onclick="clearLogs()">Clear</button>
-                    </div>
-                    <div id="logContainer">
-                        <div class="empty-state">Loading logs...</div>
-                    </div>
+                <div class="log-filters">
+                    <select id="messageTypeFilter">
+                        <option value="">All Types</option>
+                        <option value="turn_start">Turn Start</option>
+                        <option value="turn_complete">Turn Complete</option>
+                        <option value="notification">Notification</option>
+                        <option value="action_result">Action Result</option>
+                        <option value="tool_call">Tool Call</option>
+                        <option value="note">Note</option>
+                    </select>
+                    <select id="directionFilter">
+                        <option value="">All Directions</option>
+                        <option value="incoming">Incoming (from DLL)</option>
+                        <option value="outgoing">Outgoing (to DLL)</option>
+                    </select>
+                    <input type="number" id="messageTurnFilter" placeholder="Min Turn" min="0" style="width: 100px;">
+                    <input type="number" id="messageLimit" placeholder="Limit" value="100" min="1" max="1000" style="width: 80px;">
+                    <button onclick="refreshMessages()">Refresh</button>
                 </div>
-                
-                <!-- Message Log Tab -->
-                <div id="messagesTab" class="tab-content">
-                    <div class="log-filters">
-                        <select id="messageTypeFilter">
-                            <option value="">All Types</option>
-                            <option value="turn_start">Turn Start</option>
-                            <option value="notification">Notification</option>
-                            <option value="action_result">Action Result</option>
-                            <option value="tool_call">Tool Call</option>
-                            <option value="tool_result_get_notifications">Tool Result</option>
-                        </select>
-                        <select id="directionFilter">
-                            <option value="">All Directions</option>
-                            <option value="incoming">Incoming</option>
-                            <option value="outgoing">Outgoing</option>
-                        </select>
-                        <input type="number" id="messageTurnFilter" placeholder="Min Turn" min="0" style="width: 120px;">
-                        <input type="number" id="messagePlayerFilter" placeholder="Player ID" min="0" style="width: 120px;">
-                        <input type="number" id="messageLimit" placeholder="Limit" value="100" min="1" max="1000" style="width: 100px;">
-                        <button onclick="refreshMessages()">Refresh</button>
-                        <button onclick="clearMessages()">Clear</button>
-                    </div>
-                    <div id="messageContainer">
-                        <div class="empty-state">Loading messages...</div>
-                    </div>
+                <div id="messageContainer">
+                    <div class="empty-state">Loading messages...</div>
                 </div>
             </div>
         </div>
@@ -545,6 +421,29 @@ DASHBOARD_HTML = """
                 </div>
 
                 <div class="command-section">
+                    <h3>Unit Actions</h3>
+                    <div class="unit-action-panel">
+                        <button class="command-btn" onclick="loadUnits()" style="margin-bottom: 0.75rem;">Load Units</button>
+
+                        <label>Select Unit</label>
+                        <select id="unitSelect" onchange="onUnitSelected()" disabled>
+                            <option value="">-- Load units first --</option>
+                        </select>
+
+                        <div id="unitInfo" class="unit-info" style="display: none;"></div>
+
+                        <label>Action</label>
+                        <select id="actionSelect" onchange="onActionSelected()" disabled>
+                            <option value="">-- Select unit first --</option>
+                        </select>
+
+                        <div id="paramInputs" class="param-inputs"></div>
+
+                        <button class="command-btn action" id="sendActionBtn" onclick="sendUnitAction()" disabled>Send Action</button>
+                    </div>
+                </div>
+
+                <div class="command-section">
                     <h3>Server</h3>
                     <button class="command-btn" onclick="checkHealth()">Health Check</button>
                     <button class="command-btn" onclick="pingServer()">Ping</button>
@@ -560,44 +459,6 @@ DASHBOARD_HTML = """
         const MCP_BASE = 'http://localhost:8765';
         const DASHBOARD_BASE = '';
         let refreshInterval = null;
-
-        // Log management
-        async function refreshLogs() {
-            const level = document.getElementById('levelFilter').value;
-            const text = document.getElementById('textFilter').value;
-            const playerId = document.getElementById('playerIdFilter').value;
-
-            try {
-                const params = new URLSearchParams();
-                if (level !== 'ALL') params.set('level', level);
-                if (text) params.set('text', text);
-                if (playerId) params.set('player_id', playerId);
-                params.set('limit', '200');
-
-                const response = await fetch(`${DASHBOARD_BASE}/api/logs?${params}`);
-                const data = await response.json();
-
-                const container = document.getElementById('logContainer');
-                if (data.logs.length === 0) {
-                    container.innerHTML = '<div class="empty-state">No logs matching filter</div>';
-                    return;
-                }
-
-                container.innerHTML = data.logs.map(log => `
-                    <div class="log-entry">
-                        <span class="timestamp">${log.timestamp}</span>
-                        <span class="level ${log.level}">${log.level}</span>
-                        ${escapeHtml(log.message)}
-                    </div>
-                `).join('');
-            } catch (e) {
-                console.error('Failed to fetch logs:', e);
-            }
-        }
-
-        function clearLogs() {
-            document.getElementById('logContainer').innerHTML = '<div class="empty-state">Logs cleared</div>';
-        }
 
         // MCP command execution
         async function runCommand(toolName, args = {}) {
@@ -722,14 +583,7 @@ DASHBOARD_HTML = """
 
             checkbox.addEventListener('change', () => {
                 if (checkbox.checked) {
-                    refreshInterval = setInterval(() => {
-                        const activeTab = document.querySelector('.tab-content.active');
-                        if (activeTab && activeTab.id === 'pythonTab') {
-                            refreshLogs();
-                        } else if (activeTab && activeTab.id === 'messagesTab') {
-                            refreshMessages();
-                        }
-                    }, 2000);
+                    refreshInterval = setInterval(refreshMessages, 2000);
                 } else {
                     clearInterval(refreshInterval);
                 }
@@ -737,14 +591,7 @@ DASHBOARD_HTML = """
 
             // Start auto-refresh
             if (checkbox.checked) {
-                refreshInterval = setInterval(() => {
-                    const activeTab = document.querySelector('.tab-content.active');
-                    if (activeTab && activeTab.id === 'pythonTab') {
-                        refreshLogs();
-                    } else if (activeTab && activeTab.id === 'messagesTab') {
-                        refreshMessages();
-                    }
-                }, 2000);
+                refreshInterval = setInterval(refreshMessages, 2000);
             }
         }
 
@@ -754,36 +601,18 @@ DASHBOARD_HTML = """
             return div.innerHTML;
         }
 
-        // Tab switching
-        function switchTab(tabName) {
-            // Update tab buttons
-            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-            event.target.classList.add('active');
-            
-            // Update tab content
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-            if (tabName === 'python') {
-                document.getElementById('pythonTab').classList.add('active');
-            } else {
-                document.getElementById('messagesTab').classList.add('active');
-                refreshMessages();
-            }
-        }
-
         // Message log management
         async function refreshMessages() {
             const type = document.getElementById('messageTypeFilter').value;
             const direction = document.getElementById('directionFilter').value;
-            const minTurn = document.getElementById('messageTurnFilter').value;
-            const playerId = document.getElementById('messagePlayerFilter').value;
+            const turnNumber = document.getElementById('messageTurnFilter').value;
             const limit = document.getElementById('messageLimit').value || 100;
 
             try {
                 const params = new URLSearchParams();
                 if (type) params.set('type', type);
                 if (direction) params.set('direction', direction);
-                if (minTurn) params.set('min_turn', minTurn);
-                if (playerId) params.set('player_id', playerId);
+                if (turnNumber) params.set('turn_number', turnNumber);
                 params.set('limit', limit);
 
                 const response = await fetch(`${DASHBOARD_BASE}/api/messages?${params}`);
@@ -796,7 +625,7 @@ DASHBOARD_HTML = """
                 }
 
                 container.innerHTML = data.messages.map(msg => {
-                    const timestamp = msg.timestamp ? new Date(msg.timestamp * 1000).toISOString() : 'N/A';
+                    const timestamp = msg.timestamp ? new Date(msg.timestamp).toISOString() : 'N/A';
                     const direction = msg.direction || 'unknown';
                     const type = msg.type || 'unknown';
                     const jsonStr = JSON.stringify(msg, null, 2);
@@ -831,31 +660,229 @@ DASHBOARD_HTML = """
             }
         }
 
-        function clearMessages() {
-            document.getElementById('messageContainer').innerHTML = '<div class="empty-state">Messages cleared</div>';
+        // Unit action management
+        let loadedUnits = [];
+        const UNIT_ACTIONS = {
+            'move_unit': { label: 'Move', params: [{name: 'to', type: 'coords', label: 'Target [x,y]'}] },
+            'unit_fortify': { label: 'Fortify', params: [] },
+            'unit_sleep': { label: 'Sleep', params: [] },
+            'unit_skip': { label: 'Skip Turn', params: [] },
+            'unit_alert': { label: 'Alert', params: [] },
+            'unit_heal': { label: 'Heal', params: [] },
+            'unit_pillage': { label: 'Pillage', params: [] },
+            'unit_delete': { label: 'Delete/Disband', params: [] },
+            'unit_found_city': { label: 'Found City', params: [] },
+            'unit_ranged_attack': { label: 'Ranged Attack', params: [{name: 'target', type: 'coords', label: 'Target [x,y]'}] },
+            'unit_build': { label: 'Build', params: [{name: 'build_type', type: 'int', label: 'Build Type ID'}] },
+            'unit_auto_explore': { label: 'Auto Explore', params: [] },
+            'select_unit': { label: 'Select (UI)', params: [] },
+        };
+
+        async function loadUnits() {
+            const resultDiv = document.getElementById('commandResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Loading units...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'get_units', arguments: {}})
+                });
+                const data = await response.json();
+
+                // HTTP server wraps in {status, result}
+                const result = data.result || data;
+
+                if (data.status === 'error' || result.error) {
+                    resultDiv.className = 'command-result error';
+                    resultDiv.textContent = `Error: ${result.error || JSON.stringify(result)}`;
+                    return;
+                }
+
+                // Extract units from response
+                loadedUnits = result.units || [];
+
+                const unitSelect = document.getElementById('unitSelect');
+                unitSelect.innerHTML = '<option value="">-- Select a unit --</option>';
+
+                loadedUnits.forEach(unit => {
+                    const opt = document.createElement('option');
+                    opt.value = unit.id;
+                    const name = unit.unit_type_name || unit.name || unit.type || 'Unit';
+                    opt.textContent = `[${unit.id}] ${name} @ (${unit.x}, ${unit.y})`;
+                    unitSelect.appendChild(opt);
+                });
+
+                unitSelect.disabled = false;
+                resultDiv.className = 'command-result success';
+                resultDiv.textContent = `Loaded ${loadedUnits.length} units`;
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+            }
+        }
+
+        function onUnitSelected() {
+            const unitSelect = document.getElementById('unitSelect');
+            const actionSelect = document.getElementById('actionSelect');
+            const unitInfo = document.getElementById('unitInfo');
+            const sendBtn = document.getElementById('sendActionBtn');
+
+            const unitId = parseInt(unitSelect.value);
+            const unit = loadedUnits.find(u => u.id === unitId);
+
+            if (!unit) {
+                unitInfo.style.display = 'none';
+                actionSelect.disabled = true;
+                actionSelect.innerHTML = '<option value="">-- Select unit first --</option>';
+                sendBtn.disabled = true;
+                return;
+            }
+
+            // Show unit info
+            const unitName = unit.unit_type_name || unit.name || unit.type || 'Unit';
+            const moves = unit.moves_remaining ?? unit.moves ?? 'N/A';
+            const hp = unit.max_hit_points != null ? (unit.max_hit_points - (unit.damage || 0)) : (unit.hp ?? 'N/A');
+            const maxHp = unit.max_hit_points ?? unit.max_hp ?? 'N/A';
+
+            unitInfo.style.display = 'block';
+            unitInfo.innerHTML = `
+                <div class="unit-name">${unitName}</div>
+                <div class="unit-stats">
+                    ID: ${unit.id} | Pos: (${unit.x}, ${unit.y}) | Moves: ${moves} | HP: ${hp}/${maxHp}
+                </div>
+            `;
+
+            // Populate actions
+            actionSelect.innerHTML = '<option value="">-- Select action --</option>';
+            for (const [actionType, actionDef] of Object.entries(UNIT_ACTIONS)) {
+                const opt = document.createElement('option');
+                opt.value = actionType;
+                opt.textContent = actionDef.label;
+                actionSelect.appendChild(opt);
+            }
+            actionSelect.disabled = false;
+            document.getElementById('paramInputs').innerHTML = '';
+            sendBtn.disabled = true;
+        }
+
+        function onActionSelected() {
+            const actionSelect = document.getElementById('actionSelect');
+            const paramInputs = document.getElementById('paramInputs');
+            const sendBtn = document.getElementById('sendActionBtn');
+
+            const actionType = actionSelect.value;
+            const actionDef = UNIT_ACTIONS[actionType];
+
+            if (!actionDef) {
+                paramInputs.innerHTML = '';
+                sendBtn.disabled = true;
+                return;
+            }
+
+            // Generate param inputs
+            if (actionDef.params.length === 0) {
+                paramInputs.innerHTML = '<div style="color: #888; font-size: 0.8rem;">No parameters needed</div>';
+            } else {
+                paramInputs.innerHTML = actionDef.params.map(p => {
+                    if (p.type === 'coords') {
+                        return `
+                            <label>${p.label}</label>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <input type="number" id="param_${p.name}_x" placeholder="X" style="flex: 1;">
+                                <input type="number" id="param_${p.name}_y" placeholder="Y" style="flex: 1;">
+                            </div>
+                        `;
+                    } else {
+                        return `
+                            <label>${p.label}</label>
+                            <input type="${p.type === 'int' ? 'number' : 'text'}" id="param_${p.name}" placeholder="${p.label}">
+                        `;
+                    }
+                }).join('');
+            }
+
+            sendBtn.disabled = false;
+        }
+
+        async function sendUnitAction() {
+            const unitSelect = document.getElementById('unitSelect');
+            const actionSelect = document.getElementById('actionSelect');
+            const resultDiv = document.getElementById('commandResult');
+
+            const unitId = parseInt(unitSelect.value);
+            const actionType = actionSelect.value;
+            const actionDef = UNIT_ACTIONS[actionType];
+
+            if (!unitId || !actionType || !actionDef) {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = 'Please select a unit and action';
+                return;
+            }
+
+            // Build action object
+            const action = { kind: actionType, unit_id: unitId };
+
+            // Collect params
+            for (const p of actionDef.params) {
+                if (p.type === 'coords') {
+                    const x = parseInt(document.getElementById(`param_${p.name}_x`).value);
+                    const y = parseInt(document.getElementById(`param_${p.name}_y`).value);
+                    if (isNaN(x) || isNaN(y)) {
+                        resultDiv.style.display = 'block';
+                        resultDiv.className = 'command-result error';
+                        resultDiv.textContent = `Please enter valid coordinates for ${p.label}`;
+                        return;
+                    }
+                    action[p.name] = [x, y];
+                } else if (p.type === 'int') {
+                    const val = parseInt(document.getElementById(`param_${p.name}`).value);
+                    if (isNaN(val)) {
+                        resultDiv.style.display = 'block';
+                        resultDiv.className = 'command-result error';
+                        resultDiv.textContent = `Please enter a valid number for ${p.label}`;
+                        return;
+                    }
+                    action[p.name] = val;
+                } else {
+                    action[p.name] = document.getElementById(`param_${p.name}`).value;
+                }
+            }
+
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = `Sending ${actionType}...`;
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'send_action', arguments: {action: action}})
+                });
+                const data = await response.json();
+                const result = data.result || data;
+                const isError = data.status === 'error' || result.success === false || result.error;
+                resultDiv.className = isError ? 'command-result error' : 'command-result success';
+                resultDiv.textContent = JSON.stringify(result, null, 2);
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+            }
         }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
-            refreshLogs();
+            refreshMessages();
             checkHealth();
             setupAutoRefresh();
 
-            // Filter on Enter key
-            document.getElementById('textFilter').addEventListener('keyup', (e) => {
-                if (e.key === 'Enter') refreshLogs();
-            });
-
-            // Filter on level change
-            document.getElementById('levelFilter').addEventListener('change', refreshLogs);
-            
             // Message filter handlers
             document.getElementById('messageTypeFilter').addEventListener('change', refreshMessages);
             document.getElementById('directionFilter').addEventListener('change', refreshMessages);
             document.getElementById('messageTurnFilter').addEventListener('keyup', (e) => {
-                if (e.key === 'Enter') refreshMessages();
-            });
-            document.getElementById('messagePlayerFilter').addEventListener('keyup', (e) => {
                 if (e.key === 'Enter') refreshMessages();
             });
         });
@@ -865,102 +892,65 @@ DASHBOARD_HTML = """
 """
 
 
-def create_dashboard_app(
-    mcp_server: Optional[CivMCPServer] = None,
-    state_processor: Optional["StateProcessor"] = None
-) -> Flask:
+def create_dashboard_app(mcp_server: Optional[CivMCPServer] = None) -> Flask:
     """Create and configure the Flask dashboard application.
 
     Args:
-        mcp_server: Optional MCP server instance for tool execution
-        state_processor: Optional StateProcessor for session tracking (game_id, session_id)
+        mcp_server: CivMCPServer instance (single source of truth for all state)
     """
     app = Flask(__name__)
     app.config["mcp_server"] = mcp_server
-    app.config["state_processor"] = state_processor
 
     @app.route("/")
     def index():
         return render_template_string(DASHBOARD_HTML)
 
-    @app.route("/api/logs")
-    def api_logs():
-        level_filter = request.args.get("level")
-        text_filter = request.args.get("text")
-        player_id_filter = request.args.get("player_id")
-        limit = int(request.args.get("limit", 100))
-        source = request.args.get("source", "memory")  # 'memory' or 'file'
-
-        # Parse player_id filter if provided
-        player_id = None
-        if player_id_filter:
-            try:
-                player_id = int(player_id_filter)
-            except ValueError:
-                pass  # Invalid player_id, ignore filter
-
-        if source == "file":
-            logs = read_log_file(limit)
-            # Apply filters
-            if level_filter and level_filter != "ALL":
-                logs = [log for log in logs if log["level"] == level_filter]
-            if text_filter:
-                pattern = re.compile(re.escape(text_filter), re.IGNORECASE)
-                logs = [log for log in logs if pattern.search(log["message"])]
-            if player_id is not None:
-                logs = [log for log in logs if log.get("player_id") == player_id]
-            logs = list(reversed(logs))[:limit]
-        else:
-            logs = get_logs(level_filter, text_filter, player_id, limit)
-
-        return jsonify({"logs": logs, "count": len(logs)})
-
     @app.route("/api/state")
     def api_state():
         mcp = app.config.get("mcp_server")
-        if mcp and mcp.current_state:
-            return jsonify(mcp.current_state)
-        return jsonify({"error": "No state available"})
+        if mcp:
+            # Query game state via the tool - this goes to the DLL
+            try:
+                result = mcp.execute_tool("get_game_state", {})
+                return jsonify(result)
+            except Exception as e:
+                return jsonify({"error": f"Failed to get state: {e}"})
+        return jsonify({"error": "No MCP server available"})
 
     @app.route("/api/tools")
     def api_tools():
-        return jsonify({"tools": AVAILABLE_TOOLS})
+        mcp = app.config.get("mcp_server")
+        tools = mcp.get_tools() if mcp else []
+        return jsonify({"tools": tools})
 
     @app.route("/api/session")
     def api_session():
         """Get current game and session info."""
-        state_processor = app.config.get("state_processor")
         mcp = app.config.get("mcp_server")
 
-        game_id = None
-        session_id = None
-        turn_number = None
-        turn_active = False
-
-        if state_processor:
-            game_id = state_processor.current_game_id
-            session_id = state_processor.current_session_id
-
         if mcp:
-            turn_number = mcp.turn_number
-            turn_active = mcp.turn_active
+            return jsonify({
+                "game_id": mcp.current_game_id,
+                "session_id": mcp.current_session_id,
+                "turn_number": mcp.turn_number,
+                "connected": True
+            })
 
         return jsonify({
-            "game_id": game_id,
-            "session_id": session_id,
-            "turn_number": turn_number,
-            "turn_active": turn_active,
-            "connected": state_processor is not None
+            "game_id": None,
+            "session_id": None,
+            "turn_number": None,
+            "connected": False
         })
 
     @app.route("/api/messages")
     def api_messages():
         """Get messages from JSONL log with optional filters."""
-        from .game_logger import GameLogger
+        from .game_logger import get_game_logger
 
         message_type = request.args.get("type")
         direction = request.args.get("direction")
-        min_turn = request.args.get("min_turn", type=int)
+        turn_number = request.args.get("turn_number", type=int)
         player_id = request.args.get("player_id", type=int)
         game_id = request.args.get("game_id", type=int)
         session_id = request.args.get("session_id", type=int)
@@ -970,19 +960,19 @@ def create_dashboard_app(
         # Cap limit at 1000
         limit = min(limit, 1000)
 
-        # If current_game_only and no explicit game_id, use current game from state_processor
-        state_processor = app.config.get("state_processor")
-        if current_game_only and game_id is None and state_processor:
-            game_id = state_processor.current_game_id
+        # If current_game_only and no explicit game_id, use current game from mcp_server
+        mcp = app.config.get("mcp_server")
+        if current_game_only and game_id is None and mcp:
+            game_id = mcp.current_game_id
 
-        # Get messages from logger
-        game_logger = GameLogger()
+        # Get messages from singleton logger
+        game_logger = get_game_logger()
         messages = game_logger.get_messages(
             message_type=message_type,
-            min_turn=min_turn,
             player_id=player_id,
             game_id=game_id,
-            session_id=session_id
+            session_id=session_id,
+            turn_number=turn_number
         )
 
         # Filter by direction if specified
@@ -1000,7 +990,7 @@ def create_dashboard_app(
             "filters": {
                 "type": message_type,
                 "direction": direction,
-                "min_turn": min_turn,
+                "turn_number": turn_number,
                 "player_id": player_id,
                 "game_id": game_id,
                 "session_id": session_id,
@@ -1016,7 +1006,6 @@ def run_dashboard(
     host: str = "0.0.0.0",
     port: int = 5000,
     mcp_server: Optional[CivMCPServer] = None,
-    state_processor: Optional["StateProcessor"] = None,
     debug: bool = False,
 ):
     """Run the Flask dashboard server.
@@ -1024,12 +1013,10 @@ def run_dashboard(
     Args:
         host: Host to bind to
         port: Port to bind to
-        mcp_server: Optional MCP server instance
-        state_processor: Optional StateProcessor for session tracking
+        mcp_server: CivMCPServer instance
         debug: Enable debug mode
     """
-    setup_dashboard_logging()
-    app = create_dashboard_app(mcp_server, state_processor)
+    app = create_dashboard_app(mcp_server)
 
     print(f"Dashboard running at http://{host}:{port}")
     app.run(host=host, port=port, debug=debug, threaded=True)
