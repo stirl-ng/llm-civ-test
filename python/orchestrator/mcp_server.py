@@ -143,7 +143,36 @@ class CivMCPServer:
             self._action_count = 0
             self._action_errors = 0
             self._last_action_time = None
-    
+
+    def handle_heartbeat(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
+        """Handle heartbeat from DLL - updates connection and state without resetting counters.
+
+        This is called periodically by the DLL (every ~5 seconds) to let the orchestrator
+        know the game is still connected. Useful for detecting the game after orchestrator
+        restart.
+
+        Args:
+            state: Heartbeat state from DLL (contains turn, player_id, game_id, session_id)
+            pipe_conn: PipeConnection for sending actions to DLL
+        """
+        new_turn_num = state.get("turn")
+        new_game_id = state.get("game_id")
+        new_session_id = state.get("session_id")
+        new_player_id = state.get("player_id")
+
+        with self._lock:
+            # Update pipe connection (critical for orchestrator restart recovery)
+            self._pipe_conn = pipe_conn
+
+            # Update state - but only if we don't have state or it's the same turn
+            # This prevents overwriting mid-turn state with heartbeat data
+            if self._current_turn_number is None or self._current_turn_number == new_turn_num:
+                self._current_turn_number = new_turn_num
+                self._current_game_id = new_game_id
+                self._current_session_id = new_session_id
+                self._current_player_id = new_player_id
+            # Note: we do NOT reset action counters on heartbeat
+
     @property
     def turn_number(self) -> Optional[int]:
         """Get the current turn number."""

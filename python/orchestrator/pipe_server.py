@@ -344,6 +344,8 @@ class StateProcessor:
         # Route turn events to mcp_server
         if msg_type == "turn_start" and self.mcp_server:
             self.mcp_server.start_turn(state, pipe_conn)
+        elif msg_type == "heartbeat" and self.mcp_server:
+            self.mcp_server.handle_heartbeat(state, pipe_conn)
 
 
 class NamedPipeServer:

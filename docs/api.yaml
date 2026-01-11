@@ -429,6 +429,25 @@ events:
         playersAlive: { type: int }
         civsEver: { type: int }
 
+  heartbeat:
+    description: Periodic heartbeat sent every ~5 seconds while game is running
+    trigger: GameStatePipe::MaybeSendHeartbeat (called from ProcessCommands)
+    notes: |
+      Allows orchestrator to detect game connection after restart.
+      Same payload as turn_start but does not reset turn state.
+    payload:
+      type: heartbeat
+      game_id: { type: uint, description: "Unique game identifier (map random seed)" }
+      session_id: { type: uint, description: "Unique session identifier" }
+      player_id: { type: int }
+      turn: { type: int }
+      player_name: { type: string }
+      is_human: { type: bool }
+      state:
+        turn: { type: int }
+        playersAlive: { type: int }
+        civsEver: { type: int }
+
 # =============================================================================
 # HOOKS (DLL -> Client, triggered by game events)
 # =============================================================================
