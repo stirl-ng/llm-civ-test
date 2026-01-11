@@ -111,77 +111,6 @@ class PipeConnection:
         self._pending_responses: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._response_lock = threading.Lock()
 
-    def send_action(self, action: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
-        """Send an action to the DLL and wait for a response.
-
-        Thread-safe: can be called from HTTP handler thread.
-        Blocks until DLL returns action_result or timeout expires.
-        """
-        request_id = action.get("request_id") or str(uuid.uuid4())
-        action["request_id"] = request_id
-        
-        q = queue.Queue()
-        with self._response_lock:
-            self._pending_responses[request_id] = q
-            
-        try:
-            with self._lock:
-                message = json.dumps(action).encode("utf-8") + b"\n"
-                if not self._write(message):
-                    return {"error": "Pipe write failed", "status": "failed", "action": action}
-            
-            try:
-                # Wait for response with timeout
-                response = q.get(timeout=timeout)
-                return response
-            except queue.Empty:
-                return {"error": "Timeout waiting for response", "status": "timeout", "action": action}
-        finally:
-            with self._response_lock:
-                self._pending_responses.pop(request_id, None)
-
-    def send_end_turn(self, turn: Optional[int] = None, request_id: Optional[str] = None, timeout: float = 15.0) -> dict[str, Any]:
-        """Send end_turn signal to DLL and wait for end_turn_result.
-        
-        Args:
-            turn: Optional turn number to include in the message
-            request_id: Optional request ID for request/response matching (generated if not provided)
-            timeout: Max seconds to wait for authoritative response
-            
-        Returns:
-            The end_turn_result message from DLL
-        """
-        if request_id is None:
-            request_id = str(uuid.uuid4())
-        msg = {"type": "end_turn", "request_id": request_id}
-        if turn is not None:
-            msg["turn"] = turn
-            
-        q = queue.Queue()
-        with self._response_lock:
-            # We also listen for end_turn_result specifically
-            self._pending_responses[request_id] = q
-            # Protocol note: DLL should echo request_id in end_turn_result
-            # If not, deliver_response will need to be smarter.
-            self._pending_responses["end_turn_result"] = q
-
-        try:
-            with self._lock:
-                message = json.dumps(msg).encode("utf-8") + b"\n"
-                if not self._write(message):
-                    return {"type": "end_turn_result", "status": "error", "error": "Pipe write failed"}
-            
-            try:
-                # Wait for response with timeout
-                response = q.get(timeout=timeout)
-                return response
-            except queue.Empty:
-                return {"type": "end_turn_result", "status": "timeout"}
-        finally:
-            with self._response_lock:
-                self._pending_responses.pop(request_id, None)
-                self._pending_responses.pop("end_turn_result", None)
-
     def send_request(self, request: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
         """Send a request to the DLL and wait for response.
         
@@ -216,7 +145,7 @@ class PipeConnection:
             with self._response_lock:
                 self._pending_responses.pop(request_id, None)
     
-    def deliver_response(self, response: dict[str, Any]) -> bool:
+    def acknowledge_response(self, response: dict[str, Any]) -> bool:
         """Deliver a response to a waiting request.
         
         Called by StateProcessor when it receives a response message.
@@ -302,50 +231,38 @@ class StateProcessor:
             state: Message dictionary from DLL
             pipe_conn: Pipe connection for this session
         """
-        msg_type = state.get("type", "unknown")
-
-        # Handle response messages - deliver to waiting requests
-        if msg_type in ("player_status_result", "units_result", "action_result", "pong", "state_refresh") or msg_type.endswith("_result"):
-            if pipe_conn.deliver_response(state):
-                return
-            return
-
-        # Handle error responses
-        if msg_type == "error" and "request_id" in state:
-            if pipe_conn.deliver_response(state):
-                return
-            return
-
-        # Log EVERYTHING from DLL to JSONL file
-        import uuid
+        # Log EVERYTHING from DLL to JSONL file (before any early returns)
         from .game_logger import get_game_logger
-        log_uuid = str(uuid.uuid4())
         log_msg = state.copy()
-        log_msg["uuid"] = log_uuid
-        log_msg["request_id"] = state.get("request_id", log_uuid)  # Use existing or new
         log_msg["direction"] = "incoming"
         get_game_logger().log_message(log_msg)
+
+        msg_type = state.get("type", "unknown")
 
         # Notifications and trace don't need further processing
         if msg_type in ("game_notification", "notification", "trace"):
             return
 
+        # Handle response messages - deliver to waiting requests
+        if pipe_conn.acknowledge_response(state):
+            return
+
         # Validate message
-        is_valid, error_msg = self.validator.validate_message(state)
+        is_valid, error_msg = self.validator.validate_message(state) # TODO what hits this? remove?
         if not is_valid:
             return
 
         # Check consistency with previous turn_start
         if self._last_state:
-            is_consistent, warning = self.validator.check_turn_consistency(self._last_state, state)
+            is_consistent, warning = self.validator.check_turn_consistency(self._last_state, state) # TODO usefulness?
 
         self._last_state = state
 
         # Route turn events to mcp_server
         if msg_type == "turn_start" and self.mcp_server:
-            self.mcp_server.start_turn(state, pipe_conn)
+            self.mcp_server.start_turn(state, pipe_conn) # TODO ???
         elif msg_type == "heartbeat" and self.mcp_server:
-            self.mcp_server.handle_heartbeat(state, pipe_conn)
+            self.mcp_server.handle_heartbeat(state, pipe_conn) # TODO ???
 
 
 class NamedPipeServer:

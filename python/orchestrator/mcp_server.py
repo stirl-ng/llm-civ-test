@@ -60,7 +60,6 @@ class CivMCPServer:
         self._pipe_conn: Optional["PipeConnection"] = None
         self._current_turn_number: Optional[int] = None
         self._first_turn_of_game: Optional[int] = None
-        self._end_turn_in_progress = False
         self._lock = threading.Lock()
 
         # Session tracking (game_id persists across saves, session_id per connection)
@@ -84,7 +83,6 @@ class CivMCPServer:
         return {
             "turn_timeout": self.turn_timeout,
             "current_turn_number": self._current_turn_number,
-            "end_turn_in_progress": self._end_turn_in_progress,
             "action_count": self._action_count,
             "action_errors": self._action_errors,
             "last_action_time": self._last_action_time,
@@ -137,7 +135,6 @@ class CivMCPServer:
             self._current_game_id = new_game_id
             self._current_session_id = new_session_id
             self._current_player_id = new_player_id
-            self._end_turn_in_progress = False
 
             # Reset action statistics for new turn
             self._action_count = 0
@@ -306,7 +303,7 @@ class CivMCPServer:
         Generates a request_id for all tools that need to match request/response.
         """
         # Generate request_id for DLL-calling tools
-        request_id = str(uuid.uuid4())
+        request_id = str(uuid.uuid4()) # TODO we should be genning request_ids immediately before pipe sends it, then checking with the acknowledge_response method FIXME
         
         # Execute the tool
         try:
@@ -331,7 +328,7 @@ class CivMCPServer:
             result = {"error": str(e), "status": "error"}
 
         # Single log entry with both call and result
-        self._message_logger.log_message({
+        self._message_logger.log_message({ # TODO is this the actual return result?
             "type": "tool_call",
             "game_id": self._current_game_id,
             "session_id": self._current_session_id,
@@ -421,7 +418,6 @@ class CivMCPServer:
         "get_available_choices": "Get all pending decisions (tech, policy, production, etc.)",
         "get_victory_progress": "Get progress toward all victory conditions.",
         "get_resources": "Get strategic and luxury resources.",
-        "get_state_refresh": "Force a full state refresh from the DLL.",
         "get_player_status": "Get detailed status information for a player.",
     }
 
@@ -454,7 +450,7 @@ class CivMCPServer:
 
         # Send and track stats
         try:
-            result = pipe.send_action(message, timeout=10.0)
+            result = pipe.send_request(message, timeout=10.0)
             with self._lock:
                 if "error" in result:
                     self._action_errors += 1
@@ -479,22 +475,14 @@ class CivMCPServer:
         """
         turn = self._require_param(args, "turn", int)
         with self._lock:
-            if self._end_turn_in_progress:
-                return {"error": "An end_turn request is already in progress", "status": "error"}
-            # Mark that we're processing an end_turn to prevent concurrent calls
-            self._end_turn_in_progress = True
             pipe_conn = self._pipe_conn
             current_turn = self._current_turn_number
 
         if not pipe_conn:
-            with self._lock:
-                self._end_turn_in_progress = False
             return {"error": "No pipe connection available", "status": "error"}
 
         # Validate that we have a current turn number set
         if current_turn is None:
-            with self._lock:
-                self._end_turn_in_progress = False
             return {
                 "error": "No active turn - turn_start has not been received yet",
                 "status": "error",
@@ -505,8 +493,6 @@ class CivMCPServer:
 
         # Validate turn matches current turn
         if turn != current_turn:
-            with self._lock:
-                self._end_turn_in_progress = False
             return {
                 "error": f"Turn mismatch: requested turn {turn} but current turn is {current_turn}",
                 "status": "error",
@@ -517,13 +503,14 @@ class CivMCPServer:
 
         # Send end_turn to DLL and wait for end_turn_result
         try:
-            result = pipe_conn.send_end_turn(turn=turn, request_id=request_id, timeout=15.0)
+            msg = {"type": "end_turn", "request_id": request_id}
+            if turn is not None:
+                msg["turn"] = turn
+            result = pipe_conn.send_request(msg, timeout=15.0)
             
             status = result.get("status", "unknown")
             
             if status == "success":
-                with self._lock:
-                    self._end_turn_in_progress = False
                 return {
                     "status": "success",
                     "turn": turn,
@@ -532,8 +519,6 @@ class CivMCPServer:
 
             elif status == "blocked":
                 blocker = result.get("blocker", "unknown")
-                with self._lock:
-                    self._end_turn_in_progress = False
                 return {
                     "status": "blocked",
                     "blocker": blocker,
@@ -541,24 +526,18 @@ class CivMCPServer:
                 }
 
             elif status == "already_ended":
-                with self._lock:
-                    self._end_turn_in_progress = False
                 return {
                     "status": "already_ended",
                     "message": "Turn has already been ended"
                 }
 
             elif status == "timeout":
-                with self._lock:
-                    self._end_turn_in_progress = False
                 return {
                     "status": "timeout",
                     "error": "DLL did not respond to end_turn request in time"
                 }
 
             else:
-                with self._lock:
-                    self._end_turn_in_progress = False
                 return {
                     "status": "error",
                     "error": f"DLL returned unexpected status: {status}",
@@ -566,8 +545,6 @@ class CivMCPServer:
                 }
 
         except Exception as e:
-            with self._lock:
-                self._end_turn_in_progress = False
             return {"error": f"Failed to end turn: {e}"}
 
     # -------------------------------------------------------------------------
