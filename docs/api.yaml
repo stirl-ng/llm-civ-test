@@ -448,6 +448,31 @@ events:
         playersAlive: { type: int }
         civsEver: { type: int }
 
+  game_start:
+    description: Sent when pipe connects, provides civilization/leader information (Dawn of Man)
+    trigger: CvGame::SendGameStartInfoToPipe (called from GameStatePipe on connection)
+    notes: |
+      Sent once when the orchestrator connects to provide civilization context.
+      This information would normally be shown in the "Dawn of Man" popup.
+    payload:
+      type: game_start
+      popup_type: { type: string, value: "dawn_of_man" }
+      game_id: { type: uint, description: "Unique game identifier (map random seed)" }
+      session_id: { type: uint, description: "Unique session identifier" }
+      player_id: { type: int }
+      turn: { type: int }
+      civilization: { type: string, description: "Civilization name" }
+      leader: { type: string, description: "Leader name" }
+      trait_name: { type: string, description: "Unique ability name" }
+      trait_description: { type: string, description: "Unique ability description" }
+      uniques:
+        type: array
+        description: "Unique units and buildings"
+        items:
+          name: { type: string }
+          type: { type: string, enum: ["unit", "building"] }
+          replaces: { type: string, optional: true, description: "What it replaces (if any)" }
+
 # =============================================================================
 # HOOKS (DLL -> Client, triggered by game events)
 # =============================================================================
