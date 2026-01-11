@@ -459,6 +459,17 @@ DASHBOARD_HTML = """
         const MCP_BASE = 'http://localhost:8765';
         const DASHBOARD_BASE = '';
         let refreshInterval = null;
+        let hideResultTimeout = null;
+
+        function scheduleAutoHide() {
+            if (hideResultTimeout) {
+                clearTimeout(hideResultTimeout);
+            }
+            hideResultTimeout = setTimeout(() => {
+                const resultDiv = document.getElementById('commandResult');
+                resultDiv.style.display = 'none';
+            }, 5000);
+        }
 
         // MCP command execution
         async function runCommand(toolName, args = {}) {
@@ -476,9 +487,11 @@ DASHBOARD_HTML = """
                 const data = await response.json();
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
             }
         }
 
@@ -497,6 +510,7 @@ DASHBOARD_HTML = """
                 if (!sessionData.turn_number) {
                     resultDiv.className = 'command-result error';
                     resultDiv.textContent = 'Error: No active turn. Make sure the game is running and a turn has started.';
+                    scheduleAutoHide();
                     return;
                 }
 
@@ -506,6 +520,7 @@ DASHBOARD_HTML = """
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
             }
         }
 
@@ -519,10 +534,12 @@ DASHBOARD_HTML = """
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
                 updateStatus(true);
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
                 updateStatus(false);
+                scheduleAutoHide();
             }
         }
 
@@ -542,10 +559,12 @@ DASHBOARD_HTML = """
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
                 updateStatus(true);
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
                 updateStatus(false);
+                scheduleAutoHide();
             }
         }
 
@@ -558,9 +577,11 @@ DASHBOARD_HTML = """
                 const data = await response.json();
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = JSON.stringify(data, null, 2);
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
             }
         }
 
@@ -698,6 +719,7 @@ DASHBOARD_HTML = """
                 if (data.status === 'error' || result.error) {
                     resultDiv.className = 'command-result error';
                     resultDiv.textContent = `Error: ${result.error || JSON.stringify(result)}`;
+                    scheduleAutoHide();
                     return;
                 }
 
@@ -718,9 +740,11 @@ DASHBOARD_HTML = """
                 unitSelect.disabled = false;
                 resultDiv.className = 'command-result success';
                 resultDiv.textContent = `Loaded ${loadedUnits.length} units`;
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
             }
         }
 
@@ -820,6 +844,7 @@ DASHBOARD_HTML = """
                 resultDiv.style.display = 'block';
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = 'Please select a unit and action';
+                scheduleAutoHide();
                 return;
             }
 
@@ -835,6 +860,7 @@ DASHBOARD_HTML = """
                         resultDiv.style.display = 'block';
                         resultDiv.className = 'command-result error';
                         resultDiv.textContent = `Please enter valid coordinates for ${p.label}`;
+                        scheduleAutoHide();
                         return;
                     }
                     action[p.name] = [x, y];
@@ -844,6 +870,7 @@ DASHBOARD_HTML = """
                         resultDiv.style.display = 'block';
                         resultDiv.className = 'command-result error';
                         resultDiv.textContent = `Please enter a valid number for ${p.label}`;
+                        scheduleAutoHide();
                         return;
                     }
                     action[p.name] = val;
@@ -867,9 +894,11 @@ DASHBOARD_HTML = """
                 const isError = data.status === 'error' || result.success === false || result.error;
                 resultDiv.className = isError ? 'command-result error' : 'command-result success';
                 resultDiv.textContent = JSON.stringify(result, null, 2);
+                scheduleAutoHide();
             } catch (e) {
                 resultDiv.className = 'command-result error';
                 resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
             }
         }
 
