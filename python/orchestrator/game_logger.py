@@ -132,5 +132,49 @@ class GameLogger:
                         continue
 
                 filtered.append(msg)
-            
+
             return filtered
+
+    def mark_deleted(self, message_uuid: str) -> bool:
+        """Mark a message as deleted by setting a 'deleted' timestamp.
+
+        Rewrites the JSONL file with the message updated.
+
+        Args:
+            message_uuid: UUID of the message to mark as deleted
+
+        Returns:
+            True if message was found and marked, False otherwise
+        """
+        from datetime import datetime
+
+        with self._lock:
+            if not self.messages_file.exists():
+                return False
+
+            # Read all messages
+            messages = []
+            found = False
+            with open(self.messages_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                        if msg.get("uuid") == message_uuid:
+                            msg["deleted"] = datetime.now().isoformat()
+                            found = True
+                        messages.append(msg)
+                    except json.JSONDecodeError:
+                        pass
+
+            if not found:
+                return False
+
+            # Rewrite file with updated message
+            with open(self.messages_file, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg) + "\n")
+
+            return True

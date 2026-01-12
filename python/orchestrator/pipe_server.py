@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from ctypes import wintypes
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .message_validator import MessageValidator
 
@@ -198,12 +198,6 @@ class PipeConnection:
         return bytes(self._buf[:bytes_read.value])
 
 
-# Callback type: receives state dict and pipe connection for sending actions
-OnTurnStart = Callable[[dict[str, Any], PipeConnection], None]
-# Callback type: called when turn completes (no parameters needed)
-OnTurnComplete = Callable[[], None]
-
-
 class StateProcessor:
     """Processes incoming messages from DLL - validates, logs, and routes to CivMCPServer."""
 
@@ -217,52 +211,48 @@ class StateProcessor:
         self._last_state: Optional[dict[str, Any]] = None
         self.mcp_server = mcp_server
 
-    def process_state(
-        self,
-        state: dict[str, Any],
-        pipe_conn: PipeConnection
-    ) -> None:
+    def process_message(self, message: dict[str, Any]) -> None:
         """Process an incoming message from DLL.
 
         Routes responses to waiting requests, logs everything, validates,
         and calls mcp_server on turn events.
 
         Args:
-            state: Message dictionary from DLL
-            pipe_conn: Pipe connection for this session
+            message: Message dictionary from DLL
         """
         # Log EVERYTHING from DLL to JSONL file (before any early returns)
         from .game_logger import get_game_logger
-        log_msg = state.copy()
+        log_msg = message.copy()
         log_msg["direction"] = "incoming"
         get_game_logger().log_message(log_msg)
 
-        msg_type = state.get("type", "unknown")
+        msg_type = message.get("type", "unknown")
+
+        # Route turn events to mcp_server
+        if msg_type == "turn_start" and self.mcp_server:
+            self.mcp_server.start_turn(message)
+        elif msg_type == "heartbeat" and self.mcp_server:
+            self.mcp_server.handle_heartbeat(message)
 
         # Notifications and trace don't need further processing
         if msg_type in ("game_notification", "notification", "trace"):
             return
 
         # Handle response messages - deliver to waiting requests
-        if pipe_conn.acknowledge_response(state):
+        if self.mcp_server and self.mcp_server.acknowledge_response(message):
             return
 
         # Validate message
-        is_valid, error_msg = self.validator.validate_message(state) # TODO what hits this? remove?
+        is_valid, error_msg = self.validator.validate_message(message)
         if not is_valid:
             return
 
         # Check consistency with previous turn_start
         if self._last_state:
-            is_consistent, warning = self.validator.check_turn_consistency(self._last_state, state) # TODO usefulness?
+            is_consistent, warning = self.validator.check_turn_consistency(self._last_state, message)
 
-        self._last_state = state
+        self._last_state = message
 
-        # Route turn events to mcp_server
-        if msg_type == "turn_start" and self.mcp_server:
-            self.mcp_server.start_turn(state, pipe_conn) # TODO ???
-        elif msg_type == "heartbeat" and self.mcp_server:
-            self.mcp_server.handle_heartbeat(state, pipe_conn) # TODO ???
 
 
 class NamedPipeServer:
@@ -363,6 +353,10 @@ class NamedPipeServer:
         bytes_avail = wintypes.DWORD(0)
         pipe_conn = PipeConnection(h)
 
+        # Set pipe connection on mcp_server once at connection time
+        if self.mcp_server:
+            self.mcp_server.set_pipe_connection(pipe_conn)
+
         while self._running:
             # Non-blocking peek to check if data is available
             # This allows writes from other threads to proceed without blocking
@@ -381,44 +375,37 @@ class NamedPipeServer:
                 err = ctypes.get_last_error()
                 if err == WinAPI.ERROR_MORE_DATA:
                     chunk = bytes(buf[:bytes_read.value])
-                    self._dispatch(chunk, pipe_conn)
+                    self._dispatch(chunk)
                     continue
                 break
             if bytes_read.value == 0:
                 break
 
             data = bytes(buf[:bytes_read.value])
-            self._dispatch(data, pipe_conn)
+            self._dispatch(data)
 
-    def _dispatch(self, data: bytes, pipe_conn: PipeConnection) -> None:
+    def _dispatch(self, data: bytes) -> None:
         """Dispatch message(s) to handler thread immediately.
-        
+
         Handles newline-delimited JSON, potentially multiple messages in one chunk.
         Returns as fast as possible to allow next ReadFile to start.
         """
-        def process_single_message(msg_data: bytes):
-            try:
-                # Parse JSON
-                try:
-                    decoded = msg_data.decode("utf-8").strip()
-                    if not decoded:
-                        return
-                    state = json.loads(decoded)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    return
-
-                # Process state (validation, persistence, notifications, and delivery to waiting sync requests)
-                self.state_processor.process_state(state, pipe_conn)
-            except Exception:
-                pass
-
         def run_handler_pool():
             # Split data by newlines in case multiple messages arrived together
             messages = data.split(b"\n")
             for msg in messages:
-                if msg.strip():
-                    process_single_message(msg)
-            
+                try:
+                    decoded = msg.decode("utf-8").strip()
+                    if not decoded or not decoded.strip():
+                        continue
+                    message = json.loads(decoded)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    from .game_logger import get_game_logger
+                    get_game_logger().log_message({"error": "Failed to decode message", "message": msg})
+                    continue
+                # Process state (validation, persistence, notifications, and delivery to waiting sync requests)
+                self.state_processor.process_message(message)
+
             # Cleanup thread reference
             with self._handler_lock:
                 if self._current_handler_thread == threading.current_thread():

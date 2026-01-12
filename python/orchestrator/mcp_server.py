@@ -12,12 +12,11 @@ to the LLM, allowing it to see the result before deciding the next action.
 
 import threading
 import time
-import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 
 if TYPE_CHECKING:
-    from .pipe_server import PipeConnection, StateProcessor
+    from .pipe_server import PipeConnection
 
 
 
@@ -116,12 +115,11 @@ class CivMCPServer:
 
         return tools
 
-    def start_turn(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
-        """Update turn state with the given game state and pipe connection.
+    def start_turn(self, state: dict[str, Any]) -> None:
+        """Update turn state with the given game state.
 
         Args:
             state: Game state from DLL (contains turn, player_id, game_id, session_id)
-            pipe_conn: PipeConnection for sending actions to DLL
         """
         new_turn_num = state.get("turn")
         new_game_id = state.get("game_id")
@@ -129,8 +127,6 @@ class CivMCPServer:
         new_player_id = state.get("player_id")
 
         with self._lock:
-            # Update all state
-            self._pipe_conn = pipe_conn
             self._current_turn_number = new_turn_num
             self._current_game_id = new_game_id
             self._current_session_id = new_session_id
@@ -141,8 +137,8 @@ class CivMCPServer:
             self._action_errors = 0
             self._last_action_time = None
 
-    def handle_heartbeat(self, state: dict[str, Any], pipe_conn: "PipeConnection") -> None:
-        """Handle heartbeat from DLL - updates connection and state without resetting counters.
+    def handle_heartbeat(self, state: dict[str, Any]) -> None:
+        """Handle heartbeat from DLL - updates state without resetting counters.
 
         This is called periodically by the DLL (every ~5 seconds) to let the orchestrator
         know the game is still connected. Useful for detecting the game after orchestrator
@@ -150,25 +146,12 @@ class CivMCPServer:
 
         Args:
             state: Heartbeat state from DLL (contains turn, player_id, game_id, session_id)
-            pipe_conn: PipeConnection for sending actions to DLL
         """
-        new_turn_num = state.get("turn")
-        new_game_id = state.get("game_id")
-        new_session_id = state.get("session_id")
-        new_player_id = state.get("player_id")
-
         with self._lock:
-            # Update pipe connection (critical for orchestrator restart recovery)
-            self._pipe_conn = pipe_conn
-
-            # Update state - but only if we don't have state or it's the same turn
-            # This prevents overwriting mid-turn state with heartbeat data
-            if self._current_turn_number is None or self._current_turn_number == new_turn_num:
-                self._current_turn_number = new_turn_num
-                self._current_game_id = new_game_id
-                self._current_session_id = new_session_id
-                self._current_player_id = new_player_id
-            # Note: we do NOT reset action counters on heartbeat
+            self._current_turn_number = state.get("turn")
+            self._current_game_id = state.get("game_id")
+            self._current_session_id = state.get("session_id")
+            self._current_player_id = state.get("player_id")
 
     @property
     def turn_number(self) -> Optional[int]:
@@ -241,6 +224,17 @@ class CivMCPServer:
             )
         return value
 
+    def set_pipe_connection(self, pipe_conn: "PipeConnection") -> None:
+        """Set the current pipe connection.
+
+        Called by NamedPipeServer when a new client connects.
+
+        Args:
+            pipe_conn: The new PipeConnection instance
+        """
+        with self._lock:
+            self._pipe_conn = pipe_conn
+
     def _get_pipe(self) -> "PipeConnection":
         """Get the pipe connection or raise if not available.
 
@@ -256,15 +250,31 @@ class CivMCPServer:
             raise ToolError("No pipe connection available")
         return pipe_conn
 
+    def acknowledge_response(self, response: dict[str, Any]) -> bool:
+        """Deliver a response to a waiting request.
+
+        Forwards to the current pipe connection's acknowledge_response method.
+
+        Args:
+            response: Response dictionary from DLL
+
+        Returns:
+            True if response was delivered to a waiting request, False otherwise
+        """
+        with self._lock:
+            pipe_conn = self._pipe_conn
+        if not pipe_conn:
+            return False
+        return pipe_conn.acknowledge_response(response)
+
     def _send_pipe_request(
-        self, request_type: str, timeout: float = 5.0, request_id: Optional[str] = None, **extra_fields: Any
+        self, request_type: str, timeout: float = 5.0, **extra_fields: Any
     ) -> dict[str, Any]:
         """Send a request to the DLL and return the response.
 
         Args:
             request_type: The message type (e.g., "get_state", "get_units")
             timeout: Request timeout in seconds
-            request_id: Request ID for request/response matching (required for proper matching)
             **extra_fields: Additional fields to include in the request
 
         Returns:
@@ -274,14 +284,7 @@ class CivMCPServer:
             ToolError: If no pipe connection or request fails
         """
         pipe = self._get_pipe()
-        # uuid should always be provided by execute_tool, but generate one if missing for safety
-        if request_id is None:
-            request_id = str(uuid.uuid4())
-        request = {
-            "type": request_type,
-            "request_id": request_id,
-            **extra_fields,
-        }
+        request = {"type": request_type, **extra_fields}
         try:
             return pipe.send_request(request, timeout=timeout)
         except Exception as e:
@@ -299,23 +302,12 @@ class CivMCPServer:
 
         Single log entry with both call and result after execution.
         ToolErrors are expected (validation failures) and returned cleanly.
-        
-        Generates a request_id for all tools that need to match request/response.
         """
-        # Generate request_id for DLL-calling tools
-        request_id = str(uuid.uuid4()) # TODO we should be genning request_ids immediately before pipe sends it, then checking with the acknowledge_response method FIXME
-        
-        # Execute the tool
         try:
             if name in self._TOOLS:
                 handler_name, _ = self._TOOLS[name]
                 handler = getattr(self, handler_name)
-                result = handler(request_id, arguments)
-                
-                # Verify request_id matching for DLL-calling tools
-                response_request_id = result.get("request_id")
-                if response_request_id != request_id:
-                    raise ToolError(f"Request ID mismatch for tool '{name}': sent {request_id}, received {response_request_id}")
+                result = handler(arguments)
 
             elif name in self._PLACEHOLDER_TOOLS:
                 result = self._not_implemented(name)
@@ -352,6 +344,7 @@ class CivMCPServer:
         "get_game_state": ("_get_game_state", {"category": "optional string"}),
         "get_current_turn": ("_get_current_turn", {}),
         "get_cities": ("_get_cities", {"city_id": "optional int"}),
+        "get_city_production": ("_get_city_production", {"city_id": "required int"}),
         "get_units": ("_get_units", {"player_id": "optional int"}),
         "get_notifications": ("_get_notifications", {}),
         "ping": ("_ping", {}),
@@ -367,8 +360,7 @@ class CivMCPServer:
             "limit": "optional int (default 100, max 1000)",
         }),
         "add_note": ("_add_note", {"content": "required string"}),
-        "delete_message": ("_delete_message", {"message_id": "required string (uuid of message to delete)"}),
-        "delete_note": ("_delete_message", {"message_id": "required string (uuid of note to delete)"}),
+        "delete_note": ("_delete_note", {"note_id": "required string (uuid of note to delete)"}),
         # Action tools
         "send_action": ("_send_action", {"action": "required dict with 'kind' field"}),
         "end_turn": ("_end_turn", {"turn": "required int"}),
@@ -421,13 +413,8 @@ class CivMCPServer:
         "get_player_status": "Get detailed status information for a player.",
     }
 
-    def _send_action(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Send an action to the DLL and return the response.
-        
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing the action
-        """
+    def _send_action(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Send an action to the DLL and return the response."""
         action = self._require_param(args, "action", dict)
 
         # Validate action has required 'kind' field
@@ -443,10 +430,9 @@ class CivMCPServer:
         pipe = self._get_pipe()
         action_kind = action["kind"]
 
-        # Convert action to message: 'kind' -> 'type', use provided request_id
+        # Convert action to message: 'kind' -> 'type'
         message = {k: v for k, v in action.items() if k != "kind"}
         message["type"] = action_kind
-        message["request_id"] = request_id
 
         # Send and track stats
         try:
@@ -463,15 +449,11 @@ class CivMCPServer:
                 self._action_errors += 1
             raise ToolError(f"Failed to send action: {e}") from e
 
-    def _end_turn(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _end_turn(self, args: dict[str, Any]) -> dict[str, Any]:
         """Signal that the LLM is done with its turn and wait for DLL confirmation.
 
         The DLL might block the end-turn request if there are pending units,
         tech choices, etc. This method waits for the authoritative result.
-        
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing the turn number
         """
         turn = self._require_param(args, "turn", int)
         with self._lock:
@@ -503,210 +485,86 @@ class CivMCPServer:
 
         # Send end_turn to DLL and wait for end_turn_result
         try:
-            msg = {"type": "end_turn", "request_id": request_id}
-            if turn is not None:
-                msg["turn"] = turn
+            msg = {"type": "end_turn", "turn": turn}
             result = pipe_conn.send_request(msg, timeout=15.0)
-            
-            status = result.get("status", "unknown")
-            
-            if status == "success":
-                return {
-                    "status": "success",
-                    "turn": turn,
-                    "message": "Turn ended successfully"
-                }
-
-            elif status == "blocked":
-                blocker = result.get("blocker", "unknown")
-                return {
-                    "status": "blocked",
-                    "blocker": blocker,
-                    "message": f"Turn cannot end yet: {blocker}. Please resolve the blocker and try again."
-                }
-
-            elif status == "already_ended":
-                return {
-                    "status": "already_ended",
-                    "message": "Turn has already been ended"
-                }
-
-            elif status == "timeout":
-                return {
-                    "status": "timeout",
-                    "error": "DLL did not respond to end_turn request in time"
-                }
-
-            else:
-                return {
-                    "status": "error",
-                    "error": f"DLL returned unexpected status: {status}",
-                    "result": result
-                }
+            return result
 
         except Exception as e:
-            return {"error": f"Failed to end turn: {e}"}
+            return {"status": "error", "error": f"Failed to end turn: {e}"}
 
     # -------------------------------------------------------------------------
     # Popup Choice Tools
     # -------------------------------------------------------------------------
 
-    def _select_pantheon(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _select_pantheon(self, args: dict[str, Any]) -> dict[str, Any]:
         """Select a pantheon belief for the player.
 
         Use this when the game shows a 'choose_pantheon' popup. The available
         beliefs and their IDs are sent via the popup_choice_needed message.
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing belief_id and optional player_id
         """
         belief_id = self._require_param(args, "belief_id", int)
-        player_id = args.get("player_id")  # Optional, defaults to active player in DLL
+        player_id = args.get("player_id")
 
         pipe = self._get_pipe()
-
-        message = {
-            "type": "select_pantheon",
-            "request_id": request_id,
-            "belief_id": belief_id,
-        }
+        message = {"type": "select_pantheon", "belief_id": belief_id}
         if player_id is not None:
             message["player_id"] = player_id
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "belief_id": result.get("belief_id"),
-                    "belief_name": result.get("belief_name"),
-                    "player_id": result.get("player_id"),
-                    "message": f"Pantheon founded with belief: {result.get('belief_name', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to select pantheon: {e}"}
 
-    def _found_religion(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _found_religion(self, args: dict[str, Any]) -> dict[str, Any]:
         """Found a new religion for the player.
 
         Use this when the game shows a 'found_religion' popup. The available
         religions and beliefs are sent via the popup_choice_needed message.
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing religion and belief IDs
         """
         religion_id = self._require_param(args, "religion_id", int)
         founder_belief_id = self._require_param(args, "founder_belief_id", int)
         follower_belief_id = self._require_param(args, "follower_belief_id", int)
-        pantheon_belief_id = args.get("pantheon_belief_id")
-        bonus_belief_id = args.get("bonus_belief_id")
-        religion_name = args.get("religion_name")
-        city_x = args.get("city_x")
-        city_y = args.get("city_y")
-        player_id = args.get("player_id")
 
         pipe = self._get_pipe()
-
         message: dict[str, Any] = {
             "type": "found_religion",
-            "request_id": request_id,
             "religion_id": religion_id,
             "founder_belief_id": founder_belief_id,
             "follower_belief_id": follower_belief_id,
         }
-        if pantheon_belief_id is not None:
-            message["pantheon_belief_id"] = pantheon_belief_id
-        if bonus_belief_id is not None:
-            message["bonus_belief_id"] = bonus_belief_id
-        if religion_name is not None:
-            message["religion_name"] = religion_name
-        if city_x is not None:
-            message["city_x"] = city_x
-        if city_y is not None:
-            message["city_y"] = city_y
-        if player_id is not None:
-            message["player_id"] = player_id
+        for key in ("pantheon_belief_id", "bonus_belief_id", "religion_name", "city_x", "city_y", "player_id"):
+            if args.get(key) is not None:
+                message[key] = args[key]
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "religion_id": result.get("religion_id"),
-                    "religion_name": result.get("religion_name"),
-                    "player_id": result.get("player_id"),
-                    "message": f"Religion founded: {result.get('religion_name', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                    "reason": error.get("reason"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to found religion: {e}"}
 
-    def _enhance_religion(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _enhance_religion(self, args: dict[str, Any]) -> dict[str, Any]:
         """Enhance an existing religion with additional beliefs.
 
         Use this when the game shows an 'enhance_religion' popup. The available
         beliefs are sent via the popup_choice_needed message.
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing belief IDs
         """
         follower2_belief_id = self._require_param(args, "follower2_belief_id", int)
         enhancer_belief_id = self._require_param(args, "enhancer_belief_id", int)
-        player_id = args.get("player_id")
 
         pipe = self._get_pipe()
-
         message: dict[str, Any] = {
             "type": "enhance_religion",
-            "request_id": request_id,
             "follower2_belief_id": follower2_belief_id,
             "enhancer_belief_id": enhancer_belief_id,
         }
-        if player_id is not None:
-            message["player_id"] = player_id
+        if args.get("player_id") is not None:
+            message["player_id"] = args["player_id"]
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "religion_id": result.get("religion_id"),
-                    "religion_name": result.get("religion_name"),
-                    "player_id": result.get("player_id"),
-                    "message": f"Religion enhanced: {result.get('religion_name', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                    "reason": error.get("reason"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to enhance religion: {e}"}
 
-    def _city_capture_decision(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _city_capture_decision(self, args: dict[str, Any]) -> dict[str, Any]:
         """Make a decision about a captured city.
 
         Use this when the game shows a 'city_capture' popup. The available
@@ -718,59 +576,32 @@ class CivMCPServer:
         - raze: Raze the city to the ground (city is destroyed over time)
         - destroy: Destroy the city immediately (one-city challenge only)
         - liberate: Return the city to its original owner (requires liberate_to)
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing city_id, action, and optional liberate_to
         """
         city_id = self._require_param(args, "city_id", int)
         action = self._require_param(args, "action", str)
-        liberate_to = args.get("liberate_to")
-        player_id = args.get("player_id")
 
-        # Validate action
         valid_actions = ["puppet", "annex", "raze", "destroy", "liberate"]
         if action not in valid_actions:
             raise ToolError(f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}")
-
-        if action == "liberate" and liberate_to is None:
+        if action == "liberate" and args.get("liberate_to") is None:
             raise ToolError("liberate_to is required when action is 'liberate'")
 
         pipe = self._get_pipe()
-
         message: dict[str, Any] = {
             "type": "city_capture_decision",
-            "request_id": request_id,
             "city_id": city_id,
             "action": action,
         }
-        if liberate_to is not None:
-            message["liberate_to"] = liberate_to
-        if player_id is not None:
-            message["player_id"] = player_id
+        for key in ("liberate_to", "player_id"):
+            if args.get(key) is not None:
+                message[key] = args[key]
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "city_id": result.get("city_id"),
-                    "action": result.get("action"),
-                    "player_id": result.get("player_id"),
-                    "message": f"City decision made: {result.get('action', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to make city decision: {e}"}
 
-    def _set_city_production(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _set_city_production(self, args: dict[str, Any]) -> dict[str, Any]:
         """Set production for a city.
 
         Use this when the game shows a 'choose_production' popup. The available
@@ -781,96 +612,44 @@ class CivMCPServer:
         - 1 = ORDER_CONSTRUCT (buildings)
         - 2 = ORDER_CREATE (projects/wonders)
         - 3 = ORDER_MAINTAIN (processes like Wealth, Research, etc.)
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing city_id, order_type, and item_id
         """
         city_id = self._require_param(args, "city_id", int)
         order_type = self._require_param(args, "order_type", int)
         item_id = self._require_param(args, "item_id", int)
-        player_id = args.get("player_id")
 
-        # Validate order_type
         if order_type not in [0, 1, 2, 3]:
             raise ToolError(f"Invalid order_type {order_type}. Must be 0-3.")
 
         pipe = self._get_pipe()
-
         message: dict[str, Any] = {
             "type": "set_city_production",
-            "request_id": request_id,
             "city_id": city_id,
             "order_type": order_type,
             "item_id": item_id,
         }
-        if player_id is not None:
-            message["player_id"] = player_id
+        if args.get("player_id") is not None:
+            message["player_id"] = args["player_id"]
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "city_id": result.get("city_id"),
-                    "order_type": result.get("order_type"),
-                    "item_id": result.get("item_id"),
-                    "item_name": result.get("item_name"),
-                    "player_id": result.get("player_id"),
-                    "message": f"Production set to: {result.get('item_name', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to set city production: {e}"}
 
-    def _choose_tech(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _choose_tech(self, args: dict[str, Any]) -> dict[str, Any]:
         """Select a technology to research.
 
         Use this when the game shows a 'choose_tech' popup. The available
         technologies and their IDs are sent via the popup_choice_needed message.
-
-        Args:
-            request_id: Request ID to use for request/response matching
-            args: Tool arguments containing tech_id
         """
         tech_id = self._require_param(args, "tech_id", int)
-        player_id = args.get("player_id")
 
         pipe = self._get_pipe()
-
-        message: dict[str, Any] = {
-            "type": "choose_tech",
-            "request_id": request_id,
-            "tech_id": tech_id,
-        }
-        if player_id is not None:
-            message["player_id"] = player_id
+        message: dict[str, Any] = {"type": "choose_tech", "tech_id": tech_id}
+        if args.get("player_id") is not None:
+            message["player_id"] = args["player_id"]
 
         try:
-            result = pipe.send_request(message, timeout=10.0)
-
-            if result.get("success"):
-                return {
-                    "status": "success",
-                    "tech_id": result.get("tech_id"),
-                    "tech_name": result.get("tech_name"),
-                    "player_id": result.get("player_id"),
-                    "message": f"Now researching: {result.get('tech_name', 'Unknown')}"
-                }
-            else:
-                error = result.get("error", {})
-                return {
-                    "status": "error",
-                    "error": error.get("message", "Unknown error"),
-                    "code": error.get("code", "UNKNOWN"),
-                }
+            return pipe.send_request(message, timeout=10.0)
         except Exception as e:
             return {"status": "error", "error": f"Failed to choose tech: {e}"}
 
@@ -878,43 +657,28 @@ class CivMCPServer:
     # DLL Query Tools
     # -------------------------------------------------------------------------
 
-    def _get_game_state(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_game_state(self, args: dict[str, Any]) -> dict[str, Any]:
         """Query the DLL for current game state."""
-        # category = args.get("category")  # Reserved for future use
-        result = self._send_pipe_request("get_state", request_id=request_id)
-        if result.get("type") == "state_refresh":
-            state = result.get("state", {})
-            return {
-                "status": "success",
-                "turn": state.get("turn"),
-                "active_player": state.get("activePlayer"),
-                "state": state,
-            }
-        return result
+        return self._send_pipe_request("get_state")
 
-    def _get_current_turn(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_current_turn(self, args: dict[str, Any]) -> dict[str, Any]:
         """Query the DLL for the current turn number."""
-        result = self._send_pipe_request("get_state", request_id=request_id)
-        if result.get("type") == "state_refresh":
-            state = result.get("state", {})
-            return {
-                "status": "success",
-                "turn": state.get("turn"),
-                "active_player": state.get("activePlayer"),
-            }
-        return result
+        return self._send_pipe_request("get_state")
 
-    def _get_cities(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_cities(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get information about cities from DLL."""
-        # city_id = args.get("city_id")  # Reserved for future filtering
-        return self._send_pipe_request("get_cities", request_id=request_id)
+        return self._send_pipe_request("get_cities")
 
-    def _get_units(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_city_production(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Get available production options for a specific city."""
+        city_id = self._require_param(args, "city_id", int)
+        return self._send_pipe_request("get_city_production", city_id=city_id)
+
+    def _get_units(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get information about units from DLL."""
-        # player_id = args.get("player_id")  # Reserved for future filtering
-        return self._send_pipe_request("get_units", request_id=request_id)
+        return self._send_pipe_request("get_units")
 
-    def _get_notifications(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _get_notifications(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get notifications from the log (filtered by current game)."""
         game_id = self.current_game_id
         notifications = self._message_logger.get_messages(
@@ -926,25 +690,10 @@ class CivMCPServer:
             "game_id": game_id,
             "session_id": self.current_session_id,
             "player_id": self.current_player_id,
-            "request_id": request_id,
         }
-    
-    def _get_log(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Get log entries from the JSONL log with optional filters.
 
-        Args:
-            request_id: Request ID for this tool call (used in response)
-            args: Tool arguments containing optional filters:
-                - message_type: Filter by type (e.g., 'note', 'turn_start')
-                - direction: Filter by 'incoming' or 'outgoing'
-                - turn_number: Minimum turn number
-                - player_id, game_id, session_id: ID filters
-                - current_game_only: If True, filter to current game (default True)
-                - limit: Max messages to return (default 100, max 1000)
-
-        Returns:
-            Dictionary with 'messages' list and 'count'
-        """
+    def _get_log(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Get log entries from the JSONL log with optional filters."""
         message_type = args.get("message_type")
         direction = args.get("direction")
         turn_number = args.get("turn_number")
@@ -980,20 +729,8 @@ class CivMCPServer:
         if direction:
             messages = [m for m in messages if m.get("direction") == direction]
 
-        # Build set of deleted message UUIDs by scanning delete_message tool calls
-        all_tool_calls = self._message_logger.get_messages(
-            message_type="tool_call", game_id=game_id, session_id=session_id
-        )
-        deleted_uuids = set()
-        for tc in all_tool_calls: # TODO not how deleted logic works (deleted timestamp)
-            tool = tc.get("tool")
-            if tool in ("delete_message", "delete_note"):
-                deleted_id = tc.get("arguments", {}).get("message_id")
-                if deleted_id:
-                    deleted_uuids.add(deleted_id)
-
-        # Filter out deleted messages
-        messages = [m for m in messages if m.get("uuid") not in deleted_uuids]
+        # Filter out deleted messages (those with a 'deleted' timestamp)
+        messages = [m for m in messages if "deleted" not in m]
 
         # Most recent first, limited
         messages = list(reversed(messages))[:limit]
@@ -1003,45 +740,33 @@ class CivMCPServer:
             "count": len(messages),
             "game_id": game_id,
             "session_id": self.current_session_id,
-            "request_id": request_id,
         }
-    
-    def _ping(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Ping the DLL to check connectivity and get server status."""
-        result = self._send_pipe_request("ping", request_id=request_id)
 
+    def _ping(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Ping the DLL to check connectivity and get server status."""
+        result = self._send_pipe_request("ping")
+
+        # Add orchestrator stats to the result
         with self._lock:
-            stats = {
+            result["orchestrator_stats"] = {
                 "turn_number": self._current_turn_number,
                 "action_count": self._action_count,
                 "action_errors": self._action_errors,
             }
 
-        if result.get("type") == "pong":
-            return {
-                "status": "ok",
-                "server": "civ5-mcp",
-                "dll_response": "pong",
-                "timestamp": time.time(),
-                **stats,
-            }
-        return {"status": "error", "error": result.get("error", "Unexpected response")}
-    
-    def _add_note(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        return result
+
+    def _add_note(self, args: dict[str, Any]) -> dict[str, Any]:
         """Add a note. Content is captured in the tool_call log entry."""
         content = self._require_param(args, "content", str)
-        return {
-            "status": "success",
-            "content_length": len(content),
-            "request_id": request_id,
-        }
+        return {"status": "success", "content_length": len(content)}
 
-    def _delete_message(self, request_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Mark a message (or note) as deleted by its uuid. Deletion is recorded in the tool_call log."""
-        message_id = self._require_param(args, "message_id", str)
-        return {
-            "status": "success",
-            "message_id": message_id,
-            "request_id": request_id,
-        }
+    def _delete_note(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Mark a note as deleted by setting a 'deleted' timestamp on it."""
+        note_id = self._require_param(args, "note_id", str)
+        found = self._message_logger.mark_deleted(note_id)
+        if found:
+            return {"status": "success", "note_id": note_id}
+        else:
+            return {"status": "error", "error": f"Note not found: {note_id}"}
     

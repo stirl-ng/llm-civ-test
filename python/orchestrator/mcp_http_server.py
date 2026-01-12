@@ -169,35 +169,3 @@ class MCPHTTPServer:
         if self.http_server:
             self.http_server.shutdown()
             logger.info("MCP HTTP Server stopped")
-
-
-def run_http_server(host: str = "localhost", port: int = 8765):
-    """Run the MCP HTTP server standalone (for testing)."""
-    # Create a standalone CivMCPServer for testing
-    mcp_server = CivMCPServer(turn_timeout=300.0)
-    server = MCPHTTPServer(host, port, mcp_server=mcp_server)
-    server.start()
-
-    print(f"MCP HTTP Server running on http://{host}:{port}")
-    print("Press Ctrl+C to stop...")
-
-    try:
-        import time
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-        server.stop()
-
-
-if __name__ == "__main__":
-    import sys
-
-    from .logging_setup import setup_logging
-
-    setup_logging()
-
-    host = sys.argv[1] if len(sys.argv) > 1 else "localhost"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
-
-    run_http_server(host, port)

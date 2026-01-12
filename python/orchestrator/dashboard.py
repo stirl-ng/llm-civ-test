@@ -444,6 +444,46 @@ DASHBOARD_HTML = """
                 </div>
 
                 <div class="command-section">
+                    <h3>City Production</h3>
+                    <div class="unit-action-panel">
+                        <button class="command-btn" onclick="loadCities()" style="margin-bottom: 0.75rem;">Load Cities</button>
+
+                        <label>Select City</label>
+                        <select id="citySelect" onchange="onCitySelected()" disabled>
+                            <option value="">-- Load cities first --</option>
+                        </select>
+
+                        <div id="cityInfo" class="unit-info" style="display: none;"></div>
+
+                        <label>Production Type</label>
+                        <select id="prodTypeSelect" onchange="onProdTypeSelected()" disabled>
+                            <option value="">-- Select city first --</option>
+                        </select>
+
+                        <label>Item</label>
+                        <select id="prodItemSelect" disabled>
+                            <option value="">-- Select type first --</option>
+                        </select>
+
+                        <button class="command-btn action" id="setProdBtn" onclick="setProduction()" disabled style="margin-top: 0.5rem;">Set Production</button>
+                    </div>
+                </div>
+
+                <div class="command-section">
+                    <h3>Research</h3>
+                    <div class="unit-action-panel">
+                        <button class="command-btn" onclick="loadTechs()" style="margin-bottom: 0.75rem;">Load Available Techs</button>
+
+                        <label>Select Technology</label>
+                        <select id="techSelect" disabled>
+                            <option value="">-- Load techs first --</option>
+                        </select>
+
+                        <button class="command-btn action" id="chooseTechBtn" onclick="chooseTech()" disabled style="margin-top: 0.5rem;">Choose Tech</button>
+                    </div>
+                </div>
+
+                <div class="command-section">
                     <h3>Server</h3>
                     <button class="command-btn" onclick="checkHealth()">Health Check</button>
                     <button class="command-btn" onclick="pingServer()">Ping</button>
@@ -892,6 +932,335 @@ DASHBOARD_HTML = """
                 const data = await response.json();
                 const result = data.result || data;
                 const isError = data.status === 'error' || result.success === false || result.error;
+                resultDiv.className = isError ? 'command-result error' : 'command-result success';
+                resultDiv.textContent = JSON.stringify(result, null, 2);
+                scheduleAutoHide();
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
+            }
+        }
+
+        // City production management
+        let loadedCities = [];
+        const PROD_TYPES = {
+            0: { label: 'Units', key: 'trainable_units' },
+            1: { label: 'Buildings', key: 'constructable_buildings' },
+            2: { label: 'Projects/Wonders', key: 'creatable_projects' },
+            3: { label: 'Processes', key: 'maintainable_processes' }
+        };
+
+        async function loadCities() {
+            const resultDiv = document.getElementById('commandResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Loading cities...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'get_cities', arguments: {}})
+                });
+                const data = await response.json();
+                const result = data.result || data;
+
+                if (data.status === 'error' || result.error) {
+                    resultDiv.className = 'command-result error';
+                    resultDiv.textContent = `Error: ${result.error || JSON.stringify(result)}`;
+                    scheduleAutoHide();
+                    return;
+                }
+
+                loadedCities = result.cities || [];
+
+                const citySelect = document.getElementById('citySelect');
+                citySelect.innerHTML = '<option value="">-- Select a city --</option>';
+
+                loadedCities.forEach(city => {
+                    const opt = document.createElement('option');
+                    opt.value = city.id;
+                    opt.textContent = `[${city.id}] ${city.name} (Pop: ${city.population})`;
+                    citySelect.appendChild(opt);
+                });
+
+                citySelect.disabled = false;
+                resultDiv.className = 'command-result success';
+                resultDiv.textContent = `Loaded ${loadedCities.length} cities`;
+                scheduleAutoHide();
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
+            }
+        }
+
+        // Cache for city production options (keyed by city_id)
+        let cityProductionCache = {};
+
+        async function onCitySelected() {
+            const citySelect = document.getElementById('citySelect');
+            const prodTypeSelect = document.getElementById('prodTypeSelect');
+            const prodItemSelect = document.getElementById('prodItemSelect');
+            const cityInfo = document.getElementById('cityInfo');
+            const setProdBtn = document.getElementById('setProdBtn');
+            const resultDiv = document.getElementById('commandResult');
+
+            const cityId = parseInt(citySelect.value);
+            const city = loadedCities.find(c => c.id === cityId);
+
+            if (!city) {
+                cityInfo.style.display = 'none';
+                prodTypeSelect.disabled = true;
+                prodTypeSelect.innerHTML = '<option value="">-- Select city first --</option>';
+                prodItemSelect.disabled = true;
+                prodItemSelect.innerHTML = '<option value="">-- Select type first --</option>';
+                setProdBtn.disabled = true;
+                return;
+            }
+
+            // Show city info
+            const currentProd = city.current_production || city.producing || 'None';
+            cityInfo.style.display = 'block';
+            cityInfo.innerHTML = `
+                <div class="unit-name">${city.name}</div>
+                <div class="unit-stats">
+                    Pop: ${city.population} | Production: ${currentProd}
+                </div>
+            `;
+
+            // Reset dropdowns while loading
+            prodTypeSelect.innerHTML = '<option value="">Loading production options...</option>';
+            prodTypeSelect.disabled = true;
+            prodItemSelect.innerHTML = '<option value="">-- Select type first --</option>';
+            prodItemSelect.disabled = true;
+            setProdBtn.disabled = true;
+
+            // Fetch production options for this city
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'get_city_production', arguments: {city_id: cityId}})
+                });
+                const data = await response.json();
+                const result = data.result || data;
+
+                if (data.status === 'error' || result.error) {
+                    prodTypeSelect.innerHTML = '<option value="">-- Error loading --</option>';
+                    resultDiv.style.display = 'block';
+                    resultDiv.className = 'command-result error';
+                    resultDiv.textContent = `Error: ${result.error || JSON.stringify(result)}`;
+                    scheduleAutoHide();
+                    return;
+                }
+
+                // Cache the production options
+                cityProductionCache[cityId] = result;
+
+                // Populate production types
+                prodTypeSelect.innerHTML = '<option value="">-- Select type --</option>';
+                for (const [typeId, typeDef] of Object.entries(PROD_TYPES)) {
+                    const items = result[typeDef.key] || [];
+                    if (items.length > 0 || typeId == 3) { // Always show processes
+                        const opt = document.createElement('option');
+                        opt.value = typeId;
+                        opt.textContent = `${typeDef.label} (${items.length})`;
+                        prodTypeSelect.appendChild(opt);
+                    }
+                }
+                prodTypeSelect.disabled = false;
+            } catch (e) {
+                prodTypeSelect.innerHTML = '<option value="">-- Error loading --</option>';
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
+            }
+        }
+
+        function onProdTypeSelected() {
+            const citySelect = document.getElementById('citySelect');
+            const prodTypeSelect = document.getElementById('prodTypeSelect');
+            const prodItemSelect = document.getElementById('prodItemSelect');
+            const setProdBtn = document.getElementById('setProdBtn');
+
+            const cityId = parseInt(citySelect.value);
+            const orderType = parseInt(prodTypeSelect.value);
+
+            // Use cached production options
+            const cityProd = cityProductionCache[cityId];
+
+            if (!cityProd || isNaN(orderType)) {
+                prodItemSelect.innerHTML = '<option value="">-- Select type first --</option>';
+                prodItemSelect.disabled = true;
+                setProdBtn.disabled = true;
+                return;
+            }
+
+            const typeDef = PROD_TYPES[orderType];
+            const items = cityProd[typeDef.key] || [];
+
+            prodItemSelect.innerHTML = '<option value="">-- Select item --</option>';
+            items.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.id;
+                const turns = item.turns ? ` (${item.turns} turns)` : '';
+                opt.textContent = `${item.name}${turns}`;
+                prodItemSelect.appendChild(opt);
+            });
+
+            prodItemSelect.disabled = items.length === 0;
+            setProdBtn.disabled = true;
+
+            // Enable button when item is selected
+            prodItemSelect.onchange = () => {
+                setProdBtn.disabled = !prodItemSelect.value;
+            };
+        }
+
+        async function setProduction() {
+            const citySelect = document.getElementById('citySelect');
+            const prodTypeSelect = document.getElementById('prodTypeSelect');
+            const prodItemSelect = document.getElementById('prodItemSelect');
+            const resultDiv = document.getElementById('commandResult');
+
+            const cityId = parseInt(citySelect.value);
+            const orderType = parseInt(prodTypeSelect.value);
+            const itemId = parseInt(prodItemSelect.value);
+
+            if (isNaN(cityId) || isNaN(orderType) || isNaN(itemId)) {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = 'Please select city, type, and item';
+                scheduleAutoHide();
+                return;
+            }
+
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Setting production...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        tool: 'set_city_production',
+                        arguments: { city_id: cityId, order_type: orderType, item_id: itemId }
+                    })
+                });
+                const data = await response.json();
+                const result = data.result || data;
+                const isError = data.status === 'error' || result.error;
+                resultDiv.className = isError ? 'command-result error' : 'command-result success';
+                resultDiv.textContent = JSON.stringify(result, null, 2);
+                scheduleAutoHide();
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
+            }
+        }
+
+        // Research management
+        let loadedTechs = [];
+
+        async function loadTechs() {
+            const resultDiv = document.getElementById('commandResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Loading available techs...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tool: 'get_game_state', arguments: {}})
+                });
+                const data = await response.json();
+                const result = data.result || data;
+
+                if (data.status === 'error' || result.error) {
+                    resultDiv.className = 'command-result error';
+                    resultDiv.textContent = `Error: ${result.error || JSON.stringify(result)}`;
+                    scheduleAutoHide();
+                    return;
+                }
+
+                // Extract available techs from game state
+                loadedTechs = result.available_techs || result.researchable_techs || [];
+
+                const techSelect = document.getElementById('techSelect');
+                const chooseTechBtn = document.getElementById('chooseTechBtn');
+
+                techSelect.innerHTML = '<option value="">-- Select a tech --</option>';
+
+                if (loadedTechs.length === 0) {
+                    techSelect.innerHTML = '<option value="">-- No techs available --</option>';
+                    techSelect.disabled = true;
+                    chooseTechBtn.disabled = true;
+                    resultDiv.className = 'command-result';
+                    resultDiv.textContent = 'No researchable techs found in game state';
+                    scheduleAutoHide();
+                    return;
+                }
+
+                loadedTechs.forEach(tech => {
+                    const opt = document.createElement('option');
+                    opt.value = tech.id;
+                    const turns = tech.turns ? ` (${tech.turns} turns)` : '';
+                    const cost = tech.cost ? ` [${tech.cost}]` : '';
+                    opt.textContent = `${tech.name}${turns}${cost}`;
+                    techSelect.appendChild(opt);
+                });
+
+                techSelect.disabled = false;
+                techSelect.onchange = () => {
+                    chooseTechBtn.disabled = !techSelect.value;
+                };
+
+                resultDiv.className = 'command-result success';
+                resultDiv.textContent = `Loaded ${loadedTechs.length} available techs`;
+                scheduleAutoHide();
+            } catch (e) {
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = `Error: ${e.message}`;
+                scheduleAutoHide();
+            }
+        }
+
+        async function chooseTech() {
+            const techSelect = document.getElementById('techSelect');
+            const resultDiv = document.getElementById('commandResult');
+
+            const techId = parseInt(techSelect.value);
+
+            if (isNaN(techId)) {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'command-result error';
+                resultDiv.textContent = 'Please select a technology';
+                scheduleAutoHide();
+                return;
+            }
+
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'command-result';
+            resultDiv.textContent = 'Setting research...';
+
+            try {
+                const response = await fetch(`${MCP_BASE}/tool`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        tool: 'choose_tech',
+                        arguments: { tech_id: techId }
+                    })
+                });
+                const data = await response.json();
+                const result = data.result || data;
+                const isError = data.status === 'error' || result.error;
                 resultDiv.className = isError ? 'command-result error' : 'command-result success';
                 resultDiv.textContent = JSON.stringify(result, null, 2);
                 scheduleAutoHide();
