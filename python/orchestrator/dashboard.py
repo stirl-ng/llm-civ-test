@@ -546,13 +546,6 @@ DASHBOARD_HTML = """
                 // First, get the current turn number from session
                 const sessionResponse = await fetch('/api/session');
                 const sessionData = await sessionResponse.json();
-                
-                if (!sessionData.turn_number) {
-                    resultDiv.className = 'command-result error';
-                    resultDiv.textContent = 'Error: No active turn. Make sure the game is running and a turn has started.';
-                    scheduleAutoHide();
-                    return;
-                }
 
                 // Now call end_turn with the current turn number
                 resultDiv.textContent = `Ending turn ${sessionData.turn_number}...`;

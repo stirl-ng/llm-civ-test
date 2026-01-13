@@ -8,6 +8,7 @@ import time
 import uuid
 from ctypes import wintypes
 from typing import TYPE_CHECKING, Any, Optional
+from .game_logger import get_game_logger
 
 from .message_validator import MessageValidator
 
@@ -220,13 +221,13 @@ class StateProcessor:
         Args:
             message: Message dictionary from DLL
         """
-        # Log EVERYTHING from DLL to JSONL file (before any early returns)
-        from .game_logger import get_game_logger
-        log_msg = message.copy()
-        log_msg["direction"] = "incoming"
-        get_game_logger().log_message(log_msg)
-
         msg_type = message.get("type", "unknown")
+        
+        # Log messages from DLL to JSONL file (skip heartbeats to avoid spam)
+        if msg_type != "heartbeat":
+            log_msg = message.copy()
+            log_msg["direction"] = "incoming"
+            get_game_logger().log_message(log_msg)
 
         # Route turn events to mcp_server
         if msg_type == "turn_start" and self.mcp_server:
