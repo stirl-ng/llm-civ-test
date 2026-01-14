@@ -195,6 +195,7 @@ This is accepted technical debt. Future improvement: create shared include or mo
 | **[getting-started.md](docs/getting-started.md)** | Quick start guide | Setup, curl examples, troubleshooting |
 | **[unit-actions.md](docs/unit-actions.md)** | Unit action guide | move_unit, unit_found_city, unit_sleep, unit_skip |
 | **[logging.md](docs/logging.md)** | Logging architecture | Message parity between DLL, LLM, and UI |
+| **[map-visualization.md](docs/map-visualization.md)** | ASCII map rendering | Spatial visualization for LLM, MCP tool spec |
 
 ### Key Protocol Details (from `docs/protocol.md`)
 

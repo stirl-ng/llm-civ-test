@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+import requests
 import yaml
 from jsonschema import Draft202012Validator
 
@@ -59,6 +60,191 @@ def dry_run(agent: Agent) -> None:
     print(json.dumps({"agent": agent.name(), "actions": actions}, indent=2))
 
 
+def call_orchestrator_tool(base_url: str, tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Call an orchestrator tool via HTTP."""
+    try:
+        response = requests.post(
+            f"{base_url}/tool",
+            json={"tool": tool, "arguments": arguments},
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to call orchestrator tool {tool}: {e}") from e
+
+
+def check_orchestrator_health(base_url: str) -> bool:
+    """Check if orchestrator is running."""
+    try:
+        response = requests.get(f"{base_url}/health", timeout=5.0)
+        response.raise_for_status()
+        return response.json().get("status") == "ok"
+    except requests.exceptions.RequestException:
+        return False
+
+
+def get_game_state(base_url: str) -> Optional[Dict[str, Any]]:
+    """Get current game state from orchestrator."""
+    try:
+        result = call_orchestrator_tool(base_url, "get_game_state", {})
+        if result.get("status") == "error":
+            return None
+        return result.get("result", {})
+    except Exception:
+        return None
+
+
+def send_actions_to_orchestrator(base_url: str, actions: list, notes: str = "") -> Dict[str, Any]:
+    """Send actions to orchestrator."""
+    if not actions:
+        return {"status": "success", "message": "No actions to send"}
+    
+    # Use send_actions if available, otherwise send individually
+    try:
+        result = call_orchestrator_tool(base_url, "send_actions", {
+            "actions": actions,
+            "notes": notes
+        })
+        return result
+    except RuntimeError:
+        # Fallback to individual send_action calls
+        results = []
+        for action in actions:
+            try:
+                result = call_orchestrator_tool(base_url, "send_action", {
+                    "action": action,
+                    "notes": notes if len(actions) == 1 else ""
+                })
+                results.append(result)
+            except Exception as e:
+                results.append({"status": "error", "error": str(e)})
+        return {"status": "success", "results": results}
+
+
+def end_turn(base_url: str, turn: int) -> Dict[str, Any]:
+    """End the current turn."""
+    return call_orchestrator_tool(base_url, "end_turn", {"turn": turn})
+
+
+def run_game_loop(agent: Agent, base_url: str, poll_interval: float = 2.0) -> None:
+    """Main game loop that polls for turns and processes them."""
+    print(f"Connecting to orchestrator at {base_url}...")
+    
+    # Wait for orchestrator to be available
+    max_wait = 30
+    waited = 0
+    while not check_orchestrator_health(base_url):
+        if waited >= max_wait:
+            raise RuntimeError(f"Orchestrator not available at {base_url} after {max_wait} seconds")
+        print(f"Waiting for orchestrator... ({waited}/{max_wait}s)")
+        time.sleep(1.0)
+        waited += 1
+    
+    print("Orchestrator connected!")
+    print(f"Agent: {agent.name()}")
+    print("Waiting for game to start...")
+    
+    last_turn: Optional[int] = None
+    game_over = False
+    
+    try:
+        while not game_over:
+            # Poll for game state
+            state = get_game_state(base_url)
+            
+            if state is None:
+                # No game state available yet, wait and retry
+                time.sleep(poll_interval)
+                continue
+            
+            # Extract turn number
+            current_turn = state.get("turn")
+            
+            # Check if this is a new turn
+            if current_turn is None:
+                # Game not started yet
+                time.sleep(poll_interval)
+                continue
+            
+            if last_turn is not None and current_turn == last_turn:
+                # Same turn, wait for next turn
+                time.sleep(poll_interval)
+                continue
+            
+            # New turn detected!
+            print(f"\n{'='*60}")
+            print(f"Turn {current_turn} started")
+            print(f"{'='*60}")
+            
+            last_turn = current_turn
+            
+            # Process the turn
+            try:
+                # Get agent's actions for this turn
+                print("Getting agent decisions...")
+                action_result = agent.step(state)
+                
+                # Extract actions from result
+                actions = action_result.get("actions", [])
+                notes = action_result.get("notes", "")
+                
+                if notes:
+                    print(f"Agent notes: {notes}")
+                
+                # Send actions if any
+                if actions:
+                    print(f"Sending {len(actions)} action(s)...")
+                    if isinstance(actions, list):
+                        send_result = send_actions_to_orchestrator(base_url, actions, notes)
+                    else:
+                        # Single action
+                        send_result = send_actions_to_orchestrator(base_url, [actions], notes)
+                    
+                    if send_result.get("status") == "error":
+                        print(f"Warning: Error sending actions: {send_result.get('error', 'Unknown error')}")
+                    else:
+                        print("Actions sent successfully")
+                else:
+                    print("No actions to send")
+                
+                # End the turn
+                print(f"Ending turn {current_turn}...")
+                end_result = end_turn(base_url, current_turn)
+                
+                if end_result.get("status") == "error":
+                    error_msg = end_result.get("error", "Unknown error")
+                    print(f"Warning: Error ending turn: {error_msg}")
+                    # Check if it's a game over condition
+                    if "game" in error_msg.lower() and "over" in error_msg.lower():
+                        game_over = True
+                else:
+                    print(f"Turn {current_turn} ended successfully")
+                
+            except KeyboardInterrupt:
+                print("\nInterrupted by user")
+                game_over = True
+            except Exception as e:
+                print(f"Error processing turn: {e}")
+                # Continue loop, but log the error
+                import traceback
+                traceback.print_exc()
+                time.sleep(poll_interval)
+            
+            # Small delay before next poll
+            time.sleep(0.5)
+            
+    except KeyboardInterrupt:
+        print("\nGame loop interrupted by user")
+    except Exception as e:
+        print(f"Fatal error in game loop: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    print("Game loop ended")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Civ V LLM experiments")
     parser.add_argument(
@@ -86,10 +272,19 @@ def main() -> None:
         dry_run(agent)
         return
 
-    # Placeholders for orchestrator loop (pipe IO lives in python/orchestrator)
-    pipe_name = cfg.get("orchestrator", {}).get("pipe", r"\\.\pipe\civv_llm")
-    print(f"Configured to connect to pipe: {pipe_name}")
-    print("For live runs, start python -m orchestrator and the game mod.")
+    # Get orchestrator configuration
+    orchestrator_cfg = cfg.get("orchestrator", {})
+    pipe_name = orchestrator_cfg.get("pipe", r"\\.\pipe\civv_llm")
+    base_url = orchestrator_cfg.get("url", "http://localhost:8765")
+    poll_interval = orchestrator_cfg.get("poll_interval", 2.0)
+    
+    print(f"Orchestrator pipe: {pipe_name}")
+    print(f"Orchestrator URL: {base_url}")
+    print(f"Poll interval: {poll_interval}s")
+    print()
+    
+    # Run the game loop
+    run_game_loop(agent, base_url, poll_interval)
 
 
 if __name__ == "__main__":
