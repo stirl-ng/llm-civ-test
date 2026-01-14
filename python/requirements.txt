@@ -5,3 +5,4 @@ openai>=1.35.0
 google-genai>=0.2.0
 mcp>=1.0.0
 flask>=3.0.0
+requests>=2.31.0
