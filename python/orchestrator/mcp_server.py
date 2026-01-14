@@ -12,11 +12,10 @@ to the LLM, allowing it to see the result before deciding the next action.
 
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 
 if TYPE_CHECKING:
-    from typing import Callable
     from .game_state import GameState
 
 
