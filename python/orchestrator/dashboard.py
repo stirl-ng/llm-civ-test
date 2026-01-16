@@ -235,35 +235,95 @@ DASHBOARD_HTML = """
             margin-top: 0.25rem;
         }
         .message-log {
-            max-height: 300px;
+            max-height: 500px;
             overflow-y: auto;
         }
         .message-entry {
-            padding: 0.4rem 0.6rem;
-            margin-bottom: 0.25rem;
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.4rem;
             background: #1a1a2e;
             border-radius: 4px;
-            font-size: 0.8rem;
-            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            border-left: 3px solid #3b82f6;
+            transition: background 0.2s;
+        }
+        .message-entry:hover {
+            background: #1f1f3a;
+        }
+        .message-entry.request {
+            border-left-color: #3b82f6;
+        }
+        .message-entry.response {
+            border-left-color: #4ade80;
         }
         .message-entry .timestamp {
             color: #888;
-            margin-right: 0.5rem;
+            font-size: 0.75rem;
+            margin-right: 0.75rem;
+            font-family: 'Consolas', 'Monaco', monospace;
         }
-        .message-entry .direction {
+        .message-entry .type-badge {
             display: inline-block;
-            padding: 0.1rem 0.4rem;
+            padding: 0.15rem 0.5rem;
             border-radius: 3px;
             font-size: 0.7rem;
             margin-right: 0.5rem;
+            font-weight: 600;
         }
-        .message-entry .direction.incoming {
-            background: #22c55e;
+        .message-entry .type-badge.request {
+            background: #3b82f6;
+            color: #fff;
+        }
+        .message-entry .type-badge.response {
+            background: #4ade80;
             color: #000;
         }
-        .message-entry .direction.outgoing {
-            background: #ef4444;
-            color: #fff;
+        .message-entry .summary {
+            color: #eee;
+            margin-left: 0.5rem;
+        }
+        .message-entry .model {
+            color: #aaa;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+        .message-entry .tool-call {
+            color: #4ade80;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background: #0f3460;
+            border-top: 1px solid #1a4b8c;
+        }
+        .pagination-info {
+            color: #aaa;
+            font-size: 0.85rem;
+        }
+        .pagination-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .pagination-btn {
+            padding: 0.4rem 0.8rem;
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 4px;
+            color: #eee;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.2s;
+        }
+        .pagination-btn:hover:not(:disabled) {
+            background: #1f1f3a;
+        }
+        .pagination-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         .summary-log {
             background: #16213e;
@@ -356,24 +416,20 @@ DASHBOARD_HTML = """
             </div>
             <div class="panel-body" id="llmActivityPanel">
                 <div class="section">
-                    <div class="section-header" onclick="toggleSection('toolCallsSection')">
-                        <span class="section-title">Recent Tool Calls</span>
-                        <span class="section-toggle" id="toolCallsToggle">▼</span>
-                    </div>
-                    <div class="section-content" id="toolCallsSection">
-                        <div id="toolCallsList">
-                            <div class="empty-state">No tool calls yet</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="section">
                     <div class="section-header" onclick="toggleSection('messageLogSection')">
-                        <span class="section-title">Message Log</span>
+                        <span class="section-title">LLM Messages</span>
                         <span class="section-toggle" id="messageLogToggle">▼</span>
                     </div>
                     <div class="section-content" id="messageLogSection">
                         <div class="message-log" id="messageLogList">
                             <div class="empty-state">No messages yet</div>
+                        </div>
+                        <div class="pagination" id="paginationControls" style="display: none;">
+                            <div class="pagination-info" id="paginationInfo">Showing 0-0 of 0</div>
+                            <div class="pagination-controls">
+                                <button class="pagination-btn" id="prevBtn" onclick="loadPreviousPage()">Previous</button>
+                                <button class="pagination-btn" id="nextBtn" onclick="loadNextPage()">Next</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -617,57 +673,127 @@ DASHBOARD_HTML = """
             }
         }
 
+        // LLM Activity - pagination state
+        let llmPaginationState = {
+            offset: 0,
+            limit: 50,
+            total: 0
+        };
+
+        // Debounce helper
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
         // LLM Activity
-        async function refreshLLMActivity() {
+        async function refreshLLMActivity(resetOffset = false) {
             try {
-                const response = await fetch(`${DASHBOARD_BASE}/api/llm_activity`);
+                if (resetOffset) {
+                    llmPaginationState.offset = 0;
+                }
+                
+                const params = new URLSearchParams({
+                    limit: llmPaginationState.limit.toString(),
+                    offset: llmPaginationState.offset.toString()
+                });
+                
+                const response = await fetch(`${DASHBOARD_BASE}/api/llm_activity?${params}`);
                 const data = await response.json();
 
-                // Tool Calls
-                const toolCallsList = document.getElementById('toolCallsList');
-                if (data.tool_calls && data.tool_calls.length > 0) {
-                    toolCallsList.innerHTML = data.tool_calls.map(call => {
-                        const timestamp = formatTimestamp(call.timestamp);
-                        const isError = call.result && (call.result.error || call.result.status === 'error');
-                        const statusClass = isError ? 'error' : 'success';
-                        const argsStr = call.arguments ? JSON.stringify(call.arguments).substring(0, 100) : '{}';
-                        return `
-                            <div class="tool-call ${statusClass}">
-                                <div class="tool-call-header">
-                                    <span class="tool-name">${call.tool || 'unknown'}</span>
-                                    <span class="tool-timestamp">${timestamp}</span>
-                                </div>
-                                <div class="tool-args">Args: ${argsStr}${argsStr.length >= 100 ? '...' : ''}</div>
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    toolCallsList.innerHTML = '<div class="empty-state">No tool calls yet</div>';
+                // Update pagination state
+                if (data.total !== undefined) {
+                    llmPaginationState.total = data.total;
                 }
 
                 // Message Log
                 const messageLogList = document.getElementById('messageLogList');
+                const paginationControls = document.getElementById('paginationControls');
+                
                 if (data.messages && data.messages.length > 0) {
                     messageLogList.innerHTML = data.messages.map(msg => {
                         const timestamp = formatTimestamp(msg.timestamp);
-                        const direction = msg.direction || 'unknown';
                         const type = msg.type || 'unknown';
-                        const summary = msg.summary || `${type} message`;
-                        return `
-                            <div class="message-entry">
+                        const typeClass = type === 'request' ? 'request' : 'response';
+                        const typeBadge = type === 'request' ? 'REQ' : 'RES';
+                        
+                        let html = `
+                            <div class="message-entry ${typeClass}">
                                 <span class="timestamp">${timestamp}</span>
-                                <span class="direction ${direction}">${direction}</span>
-                                <span>${summary}</span>
-                            </div>
+                                <span class="type-badge ${typeClass}">${typeBadge}</span>
                         `;
+                        
+                        if (msg.model) {
+                            html += `<span class="model">${msg.model}</span>`;
+                        }
+                        
+                        if (msg.tool_call) {
+                            html += `<span class="tool-call">→ ${msg.tool_call}</span>`;
+                        }
+                        
+                        html += `<span class="summary">${msg.summary || ''}</span>`;
+                        html += `</div>`;
+                        
+                        return html;
                     }).join('');
+                    
+                    // Show pagination if there are more messages
+                    if (llmPaginationState.total > llmPaginationState.limit) {
+                        paginationControls.style.display = 'flex';
+                        updatePaginationInfo();
+                    } else {
+                        paginationControls.style.display = 'none';
+                    }
+                    
+                    // Auto-scroll to top for new messages (when offset is 0)
+                    if (llmPaginationState.offset === 0) {
+                        messageLogList.scrollTop = 0;
+                    }
                 } else {
                     messageLogList.innerHTML = '<div class="empty-state">No messages yet</div>';
+                    paginationControls.style.display = 'none';
                 }
             } catch (e) {
                 console.error('Failed to fetch LLM activity:', e);
             }
         }
+
+        function updatePaginationInfo() {
+            const info = document.getElementById('paginationInfo');
+            const start = llmPaginationState.offset + 1;
+            const end = Math.min(llmPaginationState.offset + llmPaginationState.limit, llmPaginationState.total);
+            info.textContent = `Showing ${start}-${end} of ${llmPaginationState.total}`;
+            
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            
+            prevBtn.disabled = llmPaginationState.offset === 0;
+            nextBtn.disabled = llmPaginationState.offset + llmPaginationState.limit >= llmPaginationState.total;
+        }
+
+        function loadNextPage() {
+            if (llmPaginationState.offset + llmPaginationState.limit < llmPaginationState.total) {
+                llmPaginationState.offset += llmPaginationState.limit;
+                refreshLLMActivity(false);
+            }
+        }
+
+        function loadPreviousPage() {
+            if (llmPaginationState.offset > 0) {
+                llmPaginationState.offset = Math.max(0, llmPaginationState.offset - llmPaginationState.limit);
+                refreshLLMActivity(false);
+            }
+        }
+
+        // Debounced refresh for high-volume updates
+        const debouncedRefreshLLM = debounce(() => refreshLLMActivity(true), 1000);
 
         // Summary Log
         async function refreshSummaryLog() {
@@ -703,9 +829,9 @@ DASHBOARD_HTML = """
             refreshGameState();
             refreshIntervals.gameState = setInterval(refreshGameState, 3000);
 
-            // LLM activity every 2 seconds
-            refreshLLMActivity();
-            refreshIntervals.llmActivity = setInterval(refreshLLMActivity, 2000);
+            // LLM activity - use debounced refresh for high volume
+            refreshLLMActivity(true);
+            refreshIntervals.llmActivity = setInterval(() => debouncedRefreshLLM(), 2000);
 
             // Summary log every 2 seconds
             refreshSummaryLog();
@@ -857,190 +983,227 @@ def create_dashboard_app(
 
     @app.route("/api/llm_activity")
     def api_llm_activity():
-        """Get recent LLM activity (tool calls and messages)."""
-        from .game_logger import get_game_logger
+        """Get recent LLM activity from llm_messages.jsonl."""
+        from .llm_logger import get_llm_logger
+        import json
+        from pathlib import Path
 
-        mcp = app.config.get("mcp_server")
-        game_logger = get_game_logger()
-
-        # Get recent tool requests
-        tool_requests = game_logger.get_messages(
-            message_type="tool_request"
-        )
-
-        # Get recent tool responses
-        tool_responses = game_logger.get_messages(
-            message_type="tool_response"
-        )
-
-        # Combine and sort by timestamp
-        tool_calls = []
-        tool_response_map = {}
-
-        # Map responses by tool name and timestamp
-        for response in tool_responses:
-            tool_name = response.get("tool", "unknown")
-            timestamp = response.get("timestamp", "")
-            tool_response_map[tool_name] = response
-
-        # Create tool call entries from requests
-        for request in tool_requests[-30:]:  # Last 30 requests
-            tool_name = request.get("tool", "unknown")
-            timestamp = request.get("timestamp", "")
-            arguments = request.get("arguments", {})
+        try:
+            limit = int(request.args.get("limit", 100))
+            offset = int(request.args.get("offset", 0))
             
-            # Find matching response
-            result = None
-            if tool_name in tool_response_map:
-                result = tool_response_map[tool_name].get("result")
-
-            tool_calls.append({
-                "tool": tool_name,
-                "timestamp": timestamp,
-                "arguments": arguments,
-                "result": result
-            })
-
-        # Sort by timestamp (most recent first)
-        tool_calls.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        tool_calls = tool_calls[:30]  # Limit to 30
-
-        # Get recent messages (tool_request and tool_response types)
-        messages = []
-        for msg_type in ["tool_request", "tool_response"]:
-            msgs = game_logger.get_messages(message_type=msg_type)
-            messages.extend(msgs)
-
-        # Sort by timestamp and limit
-        messages.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        messages = messages[:30]
-
-        # Format messages with summary
-        formatted_messages = []
-        for msg in messages:
-            msg_type = msg.get("type", "unknown")
-            tool = msg.get("tool", "")
-            direction = msg.get("direction", "unknown")
+            # Cap limit at 500 for performance
+            limit = min(limit, 500)
             
-            if msg_type == "tool_request":
-                summary = f"Tool request: {tool}"
-            elif msg_type == "tool_response":
-                result = msg.get("result", {})
-                if result.get("error") or result.get("status") == "error":
-                    summary = f"Tool response: {tool} (error)"
-                else:
-                    summary = f"Tool response: {tool} (success)"
-            else:
-                summary = f"{msg_type} message"
-
-            formatted_messages.append({
-                "timestamp": msg.get("timestamp"),
-                "type": msg_type,
-                "direction": direction,
-                "summary": summary
+            # Get LLM logger instance to find the log file path
+            llm_logger = get_llm_logger()
+            log_file = llm_logger.messages_file
+            
+            # If relative path, make it absolute based on module location
+            if not log_file.is_absolute():
+                module_dir = Path(__file__).parent.parent
+                log_file = module_dir / log_file
+            
+            if not log_file.exists():
+                return jsonify({
+                    "messages": [],
+                    "total": 0,
+                    "count": 0
+                })
+            
+            # Read file efficiently - read from end backwards
+            with open(log_file, "r", encoding="utf-8") as f:
+                # For efficiency with large files, read last N lines
+                # This is a simple approach - for very large files, consider tail command
+                all_lines = f.readlines()
+                
+            # Parse JSONL from end (most recent first)
+            parsed_messages = []
+            for line in reversed(all_lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                    parsed_messages.append(msg)
+                except json.JSONDecodeError:
+                    continue
+            
+            # Apply pagination
+            total = len(parsed_messages)
+            paginated = parsed_messages[offset:offset + limit]
+            
+            # Format messages for display
+            formatted_messages = []
+            for msg in paginated:
+                msg_type = msg.get("type", "unknown")
+                timestamp = msg.get("timestamp", "")
+                
+                if msg_type == "llm_request":
+                    model = msg.get("model", "unknown")
+                    # Extract tool calls from messages if present
+                    messages_list = msg.get("messages", [])
+                    last_msg = messages_list[-1] if messages_list else {}
+                    content = last_msg.get("content", "")
+                    
+                    # Try to extract tool call from content
+                    tool_call = None
+                    if "mcp_call" in content:
+                        # Simple extraction - look for tool name
+                        import re
+                        match = re.search(r"tool=['\"]([^'\"]+)['\"]", content)
+                        if match:
+                            tool_call = match.group(1)
+                    
+                    formatted_messages.append({
+                        "type": "request",
+                        "timestamp": timestamp,
+                        "model": model,
+                        "tool_call": tool_call,
+                        "uuid": msg.get("uuid"),
+                        "summary": f"Request to {model}" + (f" → {tool_call}" if tool_call else "")
+                    })
+                elif msg_type == "llm_response":
+                    response = msg.get("response", "")
+                    # Extract tool call from response
+                    tool_call = None
+                    if "mcp_call" in response:
+                        import re
+                        match = re.search(r"tool=['\"]([^'\"]+)['\"]", response)
+                        if match:
+                            tool_call = match.group(1)
+                    
+                    formatted_messages.append({
+                        "type": "response",
+                        "timestamp": timestamp,
+                        "tool_call": tool_call,
+                        "request_uuid": msg.get("request_uuid"),
+                        "summary": f"Response" + (f" → {tool_call}" if tool_call else ""),
+                        "response_preview": response[:200] + "..." if len(response) > 200 else response
+                    })
+            
+            return jsonify({
+                "messages": formatted_messages,
+                "total": total,
+                "count": len(formatted_messages),
+                "offset": offset,
+                "limit": limit
             })
-
-        return jsonify({
-            "tool_calls": tool_calls,
-            "messages": formatted_messages
-        })
+        except Exception as e:
+            import logging
+            logging.error(f"Error loading LLM activity: {e}", exc_info=True)
+            return jsonify({
+                "messages": [],
+                "total": 0,
+                "count": 0,
+                "error": str(e)
+            })
 
     @app.route("/api/messages")
     def api_messages():
         """Get messages from JSONL log with optional filters."""
         from .game_logger import get_game_logger
 
-        message_type = request.args.get("type")
-        direction = request.args.get("direction")
-        turn_number = request.args.get("turn_number", type=int)
-        player_id = request.args.get("player_id", type=int)
-        game_id = request.args.get("game_id", type=int)
-        session_id = request.args.get("session_id", type=int)
-        current_game_only = request.args.get("current_game", type=bool, default=False)
-        limit = int(request.args.get("limit", 100))
-        summary_format = request.args.get("summary", type=bool, default=False)
+        try:
+            message_type = request.args.get("type")
+            direction = request.args.get("direction")
+            turn_number = request.args.get("turn_number", type=int)
+            player_id = request.args.get("player_id", type=int)
+            game_id = request.args.get("game_id", type=int)
+            session_id = request.args.get("session_id", type=int)
+            current_game_only = request.args.get("current_game", type=bool, default=False)
+            limit = int(request.args.get("limit", 100))
+            summary_format = request.args.get("summary", type=bool, default=False)
 
-        # Cap limit at 1000
-        limit = min(limit, 1000)
+            # Cap limit at 1000
+            limit = min(limit, 1000)
 
-        # If current_game_only and no explicit game_id, use current game from mcp_server
-        mcp = app.config.get("mcp_server")
-        if current_game_only and game_id is None and mcp:
-            game_id = mcp.current_game_id
+            # If current_game_only and no explicit game_id, use current game from mcp_server
+            mcp = app.config.get("mcp_server")
+            if current_game_only and game_id is None and mcp:
+                game_id = mcp.current_game_id
 
-        # Get messages from singleton logger
-        game_logger = get_game_logger()
-        messages = game_logger.get_messages(
-            message_type=message_type,
-            player_id=player_id,
-            game_id=game_id,
-            session_id=session_id,
-            turn_number=turn_number
-        )
+            # Get messages from singleton logger
+            game_logger = get_game_logger()
+            messages = game_logger.get_messages(
+                message_type=message_type,
+                player_id=player_id,
+                game_id=game_id,
+                session_id=session_id,
+                turn_number=turn_number
+            )
 
-        # Filter by direction if specified
-        if direction:
-            messages = [msg for msg in messages if msg.get("direction") == direction]
+            # Filter by direction if specified
+            if direction:
+                messages = [msg for msg in messages if msg.get("direction") == direction]
 
-        # Return most recent messages first, limited
-        messages = list(reversed(messages))[:limit]
+            # Return most recent messages first, limited
+            messages = list(reversed(messages))[:limit]
 
-        # Format as summary if requested
-        if summary_format:
-            formatted_messages = []
-            for msg in messages:
-                msg_type = msg.get("type", "unknown")
-                direction = msg.get("direction", "unknown")
-                
-                if msg_type == "turn_start":
-                    turn = msg.get("turn", "?")
-                    summary = f"Turn {turn} started"
-                elif msg_type == "turn_complete":
-                    turn = msg.get("turn", "?")
-                    summary = f"Turn {turn} completed"
-                elif msg_type == "notification":
-                    notif_type = msg.get("notification_type", "notification")
-                    summary = f"Notification: {notif_type}"
-                elif msg_type == "action_result":
-                    action_kind = msg.get("kind", "action")
-                    success = msg.get("success", False)
-                    summary = f"Action: {action_kind} ({'success' if success else 'failed'})"
-                elif msg_type == "tool_request":
-                    tool = msg.get("tool", "unknown")
-                    summary = f"LLM called: {tool}"
-                elif msg_type == "tool_response":
-                    tool = msg.get("tool", "unknown")
-                    result = msg.get("result", {})
-                    if result.get("error") or result.get("status") == "error":
-                        summary = f"Tool response: {tool} (error)"
+            # Format as summary if requested
+            if summary_format:
+                formatted_messages = []
+                for msg in messages:
+                    msg_type = msg.get("type", "unknown")
+                    direction = msg.get("direction", "unknown")
+                    
+                    if msg_type == "turn_start":
+                        turn = msg.get("turn", "?")
+                        summary = f"Turn {turn} started"
+                    elif msg_type == "turn_complete":
+                        turn = msg.get("turn", "?")
+                        summary = f"Turn {turn} completed"
+                    elif msg_type == "notification":
+                        notif_type = msg.get("notification_type", "notification")
+                        summary = f"Notification: {notif_type}"
+                    elif msg_type == "action_result":
+                        action_kind = msg.get("kind", "action")
+                        success = msg.get("success", False)
+                        summary = f"Action: {action_kind} ({'success' if success else 'failed'})"
+                    elif msg_type == "tool_request":
+                        tool = msg.get("tool", "unknown")
+                        summary = f"LLM called: {tool}"
+                    elif msg_type == "tool_response":
+                        tool = msg.get("tool", "unknown")
+                        result = msg.get("result", {})
+                        if result.get("error") or result.get("status") == "error":
+                            summary = f"Tool response: {tool} (error)"
+                        else:
+                            summary = f"Tool response: {tool} (success)"
                     else:
-                        summary = f"Tool response: {tool} (success)"
-                else:
-                    summary = f"{msg_type} ({direction})"
+                        summary = f"{msg_type} ({direction})"
 
-                formatted_messages.append({
-                    "timestamp": msg.get("timestamp"),
-                    "type": msg_type,
-                    "summary": summary
-                })
-            messages = formatted_messages
+                    formatted_messages.append({
+                        "timestamp": msg.get("timestamp"),
+                        "type": msg_type,
+                        "summary": summary
+                    })
+                messages = formatted_messages
 
-        return jsonify({
-            "messages": messages,
-            "count": len(messages),
-            "game_id": game_id,
-            "session_id": session_id,
-            "filters": {
-                "type": message_type,
-                "direction": direction,
-                "turn_number": turn_number,
-                "player_id": player_id,
+            return jsonify({
+                "messages": messages,
+                "count": len(messages),
                 "game_id": game_id,
                 "session_id": session_id,
-                "current_game_only": current_game_only,
-                "limit": limit
-            }
-        })
+                "filters": {
+                    "type": message_type,
+                    "direction": direction,
+                    "turn_number": turn_number,
+                    "player_id": player_id,
+                    "game_id": game_id,
+                    "session_id": session_id,
+                    "current_game_only": current_game_only,
+                    "limit": limit
+                }
+            })
+        except Exception as e:
+            import logging
+            logging.error(f"Error loading messages: {e}", exc_info=True)
+            return jsonify({
+                "messages": [],
+                "count": 0,
+                "error": str(e)
+            })
 
     @app.route("/api/session")
     def api_session():

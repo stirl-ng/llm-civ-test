@@ -1,10 +1,12 @@
 name: gemini-demo
 backend:
   kind: gemini
-  model: gemini-3-flash-preview
+  model: gemini-2.5-flash-lite
   # api_key can be set here or via GEMINI_API_KEY env var
-  api_key: AIzaSyCC7CVwszH30nBvBAKBjpgB88meb2Ex0P4
+  api_key: AIzaSyDv9HUxEIkaniSJbchwEp8SEVf52Suzxv4
 tools:
+  - kind: mcp
+    # base_url will use orchestrator.url if not specified
   - kind: rag
     corpus:
       - "Civilization V policies: Tradition, Liberty, Honor."

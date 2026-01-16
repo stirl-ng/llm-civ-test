@@ -132,8 +132,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Log tool request (outgoing from LLM to orchestrator)
         from .game_logger import get_game_logger
-        logger = get_game_logger()
-        logger.log_message({
+        game_logger = get_game_logger()
+        game_logger.log_message({
             "type": "tool_request",
             "direction": "outgoing",
             "game_id": self.mcp_server.current_game_id,
@@ -144,13 +144,30 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "arguments": arguments,
         })
 
-        result = self.mcp_server.execute_tool(tool_name, arguments)
-        
-        # Check if result indicates an error
-        if result.get("status") == "error" or "error" in result:
-            self._send_json({"status": "error", "result": result}, status=500)
-        else:
-            self._send_json({"status": "success", "result": result})
+        try:
+            result = self.mcp_server.execute_tool(tool_name, arguments)
+            
+            # Check if result indicates an error
+            if result.get("status") == "error" or "error" in result:
+                error_msg = result.get("error", "Unknown error")
+                logger.error(f"Tool '{tool_name}' returned error: {error_msg}")
+                logger.error(f"Tool '{tool_name}' arguments were: {json.dumps(arguments, indent=2)}")
+                logger.error(f"Tool '{tool_name}' result: {json.dumps(result, indent=2)}")
+                self._send_json({"status": "error", "result": result}, status=500)
+            else:
+                self._send_json({"status": "success", "result": result})
+        except Exception as e:
+            import traceback
+            logger.error(f"Exception executing tool '{tool_name}': {e}")
+            logger.error(f"Tool '{tool_name}' arguments were: {json.dumps(arguments, indent=2)}")
+            logger.error(traceback.format_exc())
+            self._send_json({
+                "status": "error",
+                "result": {
+                    "error": f"Internal server error: {str(e)}",
+                    "status": "error"
+                }
+            }, status=500)
 
     def _send_json(self, data: dict, status: int = 200):
         """Send JSON response."""

@@ -178,7 +178,51 @@ class GeminiChat(ModelAdapter):
                 contents=contents,
                 config={"temperature": temperature}
             )
-            response_text = response.text.strip()
+            
+            # Check for finish reasons that indicate problems
+            if response.candidates:
+                candidate = response.candidates[0]
+                finish_reason = getattr(candidate, 'finish_reason', None)
+                
+                if finish_reason:
+                    finish_reason_str = str(finish_reason)
+                    # Check for MALFORMED_FUNCTION_CALL - this happens when Gemini tries to use
+                    # native function calling but no functions are registered
+                    if "MALFORMED_FUNCTION_CALL" in finish_reason_str:
+                        raise ValueError(
+                            "Gemini API returned MALFORMED_FUNCTION_CALL. "
+                            "This typically occurs when the model tries to use native function calling "
+                            "but no functions are registered with the API. "
+                            "The system prompt should instruct the model to output function calls as TEXT, "
+                            "not use native function calling. Check that the prompt explicitly states: "
+                            "'Output function calls as plain text, not as native function calls.'"
+                        )
+                    elif "SAFETY" in finish_reason_str:
+                        raise ValueError(
+                            "Gemini API blocked the response due to safety filters. "
+                            f"Finish reason: {finish_reason_str}"
+                        )
+                    elif "RECITATION" in finish_reason_str:
+                        raise ValueError(
+                            "Gemini API blocked the response due to recitation policy. "
+                            f"Finish reason: {finish_reason_str}"
+                        )
+            
+            # Get response text, handling None case
+            response_text = (response.text or "").strip()
+            
+            # If response is empty and we have a problematic finish reason, provide better error
+            if not response_text and response.candidates:
+                candidate = response.candidates[0]
+                finish_reason = getattr(candidate, 'finish_reason', None)
+                if finish_reason:
+                    finish_reason_str = str(finish_reason)
+                    if "MALFORMED_FUNCTION_CALL" in finish_reason_str:
+                        raise ValueError(
+                            "Gemini API returned empty response with MALFORMED_FUNCTION_CALL. "
+                            "The model tried to use native function calling but no functions are registered. "
+                            "Ensure the system prompt instructs the model to output function calls as TEXT only."
+                        )
             
             # Log LLM response
             if _llm_logger_available and request_uuid:

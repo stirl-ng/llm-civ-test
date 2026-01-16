@@ -6,6 +6,8 @@ backend:
   # base_url: http://localhost:11434/v1
   # model: llama3
 tools:
+  - kind: mcp
+    # base_url will use orchestrator.url if not specified
   - kind: rag
     corpus:
       - "Civilization V policies: Tradition, Liberty, Honor."
