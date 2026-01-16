@@ -3,11 +3,31 @@
 import json
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .game_state import GameState
 
 # Module-level singleton instance
 _instance: Optional["LLMLogger"] = None
 _instance_lock = threading.Lock()
+
+# Module-level reference to GameState (set by orchestrator)
+_game_state_ref: Optional["GameState"] = None
+_game_state_lock = threading.Lock()
+
+
+def set_game_state(game_state: Optional["GameState"]) -> None:
+    """Set the GameState reference for the logger to use.
+    
+    Called by orchestrator during initialization.
+    
+    Args:
+        game_state: GameState instance to use for metadata, or None to clear
+    """
+    global _game_state_ref
+    with _game_state_lock:
+        _game_state_ref = game_state
 
 
 def get_llm_logger() -> "LLMLogger":
@@ -23,16 +43,24 @@ def get_llm_logger() -> "LLMLogger":
 class LLMLogger:
     """JSONL file logger for LLM API requests and responses.
     
-    Logs all LLM API calls (requests and responses) to a separate JSONL file
-    for debugging and analysis. This is separate from tool call logs.
+    Logs only the latest message addition (not full conversation history)
+    along with metadata (turn, game_id, session_id, model) for each entry.
+    This keeps logs compact and queryable, similar to Claude Code's approach
+    but with per-turn granularity.
     """
 
-    def __init__(self, messages_file: str = "logs/llm_messages.jsonl"):
+    def __init__(self, messages_file: Optional[str] = None):
         """Initialize the LLM logger.
         
         Args:
-            messages_file: Path to JSONL file for LLM API messages
+            messages_file: Path to JSONL file for LLM API messages. If None, uses
+                absolute path based on module location: python/logs/llm_messages.jsonl
         """
+        if messages_file is None:
+            # Use absolute path based on module location
+            module_dir = Path(__file__).parent.parent
+            messages_file = str(module_dir / "logs" / "llm_messages.jsonl")
+        
         self.messages_file = Path(messages_file)
         self._lock = threading.Lock()
         
@@ -42,12 +70,42 @@ class LLMLogger:
         # Ensure file exists
         self.messages_file.touch(exist_ok=True)
 
-    def log_request(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> str:
+    def _get_game_metadata(self) -> dict[str, Any]:
+        """Get current game metadata from module-level GameState reference.
+        
+        Returns:
+            Dictionary with turn, game_id, session_id (or empty if not available)
+        """
+        global _game_state_ref
+        with _game_state_lock:
+            game_state = _game_state_ref
+        
+        if game_state is None:
+            return {}
+        
+        try:
+            return {
+                "turn": game_state.turn_number,
+                "game_id": game_state.game_id,
+                "session_id": game_state.session_id,
+            }
+        except AttributeError:
+            return {}
+
+    def log_request(
+        self, 
+        model: str, 
+        messages: list[dict[str, Any]], 
+        **kwargs: Any
+    ) -> str:
         """Log an LLM API request.
+        
+        Only logs the latest message (last entry in messages array) to keep logs compact.
+        Automatically includes game metadata (turn, game_id, session_id) if available.
         
         Args:
             model: Model name/identifier
-            messages: Chat messages sent to LLM
+            messages: Chat messages sent to LLM (full conversation history)
             **kwargs: Additional request parameters (temperature, etc.)
         
         Returns:
@@ -57,13 +115,23 @@ class LLMLogger:
         from uuid import uuid4
         
         request_uuid = str(uuid4())
+        
+        # Extract only the latest message (most recent addition)
+        # This is the key change: instead of logging the entire conversation,
+        # we only log what was just added
+        latest_message = messages[-1] if messages else {}
+        
+        # Get game metadata automatically
+        metadata = self._get_game_metadata()
+        
         log_entry = {
             "type": "llm_request",
             "timestamp": datetime.now().isoformat(),
             "uuid": request_uuid,
             "model": model,
-            "messages": messages,
-            **kwargs,
+            "latest_message": latest_message,  # Only latest, not full history
+            **metadata,  # turn, game_id, session_id if available
+            **{k: v for k, v in kwargs.items() if k not in metadata},  # temperature, etc.
         }
         
         with self._lock:
@@ -72,8 +140,15 @@ class LLMLogger:
         
         return request_uuid
 
-    def log_response(self, request_uuid: str, response: str, **kwargs: Any) -> None:
+    def log_response(
+        self, 
+        request_uuid: str, 
+        response: str,
+        **kwargs: Any
+    ) -> None:
         """Log an LLM API response.
+        
+        Automatically includes game metadata (turn, game_id, session_id) if available.
         
         Args:
             request_uuid: UUID of the corresponding request
@@ -82,11 +157,15 @@ class LLMLogger:
         """
         from datetime import datetime
         
+        # Get game metadata automatically
+        metadata = self._get_game_metadata()
+        
         log_entry = {
             "type": "llm_response",
             "timestamp": datetime.now().isoformat(),
             "request_uuid": request_uuid,
             "response": response,
+            **metadata,  # turn, game_id, session_id if available
             **kwargs,
         }
         

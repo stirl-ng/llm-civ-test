@@ -1,6 +1,7 @@
 """JSONL file logger for all game messages from the DLL."""
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -27,12 +28,18 @@ class GameLogger:
     to JSONL files for later querying and analysis.
     """
 
-    def __init__(self, messages_file: str = "logs/dll_messages.jsonl"):
+    def __init__(self, messages_file: Optional[str] = None):
         """Initialize the game logger.
         
         Args:
-            messages_file: Path to JSONL file for all DLL messages
+            messages_file: Path to JSONL file for all DLL messages. If None, uses
+                absolute path based on module location: python/logs/dll_messages.jsonl
         """
+        if messages_file is None:
+            # Use absolute path based on module location
+            module_dir = Path(__file__).parent.parent
+            messages_file = str(module_dir / "logs" / "dll_messages.jsonl")
+        
         self.messages_file = Path(messages_file)
         self._lock = threading.Lock()
         

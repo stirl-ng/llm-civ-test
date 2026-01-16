@@ -227,6 +227,15 @@ class CivMCPServer:
             raise ToolError(f"Request failed: {e}") from e
 
 
+    def _get_tools(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Get the list of available tools with their descriptions and parameters."""
+        tools = self.get_tools()
+        return {
+            "status": "success",
+            "tools": tools,
+            "count": len(tools)
+        }
+
     def _not_implemented(self, tool_name: str) -> dict[str, Any]:
         """Return a standard 'not implemented' response for placeholder tools."""
         return {
@@ -241,8 +250,11 @@ class CivMCPServer:
         Tool response is logged here after execution.
         ToolErrors are expected (validation failures) and returned cleanly.
         """
-        # Ensure send_request callback is configured (required for most tools)
-        if not self._send_request:
+        # Some tools don't require send_request (local tools)
+        local_tools = {"get_tools", "ping"}
+        requires_send_request = name in self._TOOLS and name not in local_tools
+        
+        if requires_send_request and not self._send_request:
             return {"error": "No send_request callback configured", "status": "error"}
         
         try:
@@ -283,6 +295,9 @@ class CivMCPServer:
     # Description comes from the handler's docstring
 
     _TOOLS: dict[str, tuple[str, dict]] = {
+        # Meta tools (local)
+        "get_tools": ("_get_tools", {}),
+        "ping": ("_ping", {}),
         # Query tools (DLL requests)
         "get_game_state": ("_get_game_state", {"category": "optional string"}),
         "get_current_turn": ("_get_current_turn", {}),
@@ -297,7 +312,6 @@ class CivMCPServer:
             "branch_id": "optional int - ID of branch to unlock (use this OR policy_id)",
             "player_id": "optional int - player ID (defaults to active player)"
         }),
-        "ping": ("_ping", {}),
         # Log tools (local)
         "get_log": ("_get_log", {
             "message_type": "optional string (e.g., 'turn_start', 'notification')",

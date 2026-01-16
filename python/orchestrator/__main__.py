@@ -32,6 +32,10 @@ def run_mcp_mode(
     # Create GameState instance (single source of truth for metadata)
     game_state = GameState()
     
+    # Register GameState with LLM logger so it can access metadata
+    from .llm_logger import set_game_state
+    set_game_state(game_state)
+    
     # Create pipe server first (manages pipe connection)
     pipe_server = NamedPipeServer(pipe_path)
     

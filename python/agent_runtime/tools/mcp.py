@@ -52,12 +52,29 @@ class MCPClientTool(Tool):
                 json={"tool": tool_name, "arguments": tool_args},
                 timeout=30.0
             )
-            response.raise_for_status()
-            return response.json()
+            
+            # Try to parse response
+            try:
+                response_json = response.json()
+                response.raise_for_status()
+                return response_json
+            except json.JSONDecodeError:
+                response_text = response.text[:500]  # Limit to 500 chars
+                response.raise_for_status()
+                return {"status": "error", "error": f"Non-JSON response: {response_text}"}
+                
         except requests.exceptions.RequestException as e:
+            error_details = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    error_details = f"{e} - {json.dumps(error_body)}"
+                except:
+                    error_body = e.response.text[:500]
+                    error_details = f"{e} - Response: {error_body}"
             return {
                 "status": "error",
-                "error": f"Failed to call tool '{tool_name}': {e}"
+                "error": f"Failed to call tool '{tool_name}': {error_details}"
             }
         except json.JSONDecodeError as e:
             return {
