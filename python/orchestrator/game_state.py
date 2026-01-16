@@ -1,98 +1,91 @@
 """GameState - Single source of truth for game metadata.
 
 Thread-safe class that holds game metadata (turn, game_id, session_id, etc.)
-Updated by StateProcessor from DLL messages, read by CivMCPServer and Dashboard API.
+Updated from DLL messages, read by MCP server and other components.
 """
 
+import logging
 import threading
 import time
 from typing import Any, Optional
 
+logger = logging.getLogger(__name__)
+
 
 class GameState:
     """Thread-safe game state metadata storage.
-    
-    Serves as the single source of truth for game metadata. Updated by StateProcessor
-    when processing DLL messages, read by CivMCPServer and Dashboard API.
+
+    Holds essential game metadata updated from DLL messages.
+    This is the single source of truth for current turn, game ID, etc.
     """
 
     def __init__(self):
         """Initialize empty game state."""
         self._lock = threading.Lock()
-        
-        # Turn management
+
+        # Core identifiers
         self._turn_number: Optional[int] = None
-        
-        # Session tracking (game_id persists across saves, session_id per connection)
         self._game_id: Optional[int] = None
         self._session_id: Optional[int] = None
         self._player_id: Optional[int] = None
         self._player_name: Optional[str] = None
-        
+
         # Connection status
         self._connected: bool = False
-        
-        # Last update timestamp
         self._last_update_time: float = 0.0
 
-    def update_from_message(self, state: dict[str, Any]) -> None:
-        """Update state from message.
-        
+    def update_from_message(self, message: dict[str, Any]) -> None:
+        """Update state from a DLL message (turn_start, heartbeat, etc.).
+
         Args:
-            state: Game state dictionary from DLL message
+            message: Message dict from DLL
         """
         with self._lock:
-            # Update session tracking
             if not self._connected:
                 self._connected = True
-            
-            if "turn" in state:
-                if self._turn_number != state.get("turn"):
-                    print('turn changed', self._turn_number, '->', state.get("turn"))
-                    self._turn_number = state.get("turn")
+                logger.info("Game connection established")
 
-            if "game_id" in state:
-                if self._game_id != state.get("game_id"):
-                    print('game_id changed', self._game_id, '->', state.get("game_id"))
-                self._game_id = state.get("game_id")
+            # Update turn
+            if "turn" in message:
+                new_turn = message["turn"]
+                if self._turn_number != new_turn:
+                    logger.debug(f"Turn: {self._turn_number} → {new_turn}")
+                    self._turn_number = new_turn
 
-            if "session_id" in state:
-                if self._session_id != state.get("session_id"):
-                    print('session_id changed', self._session_id, '->', state.get("session_id"))
-                    self._session_id = state.get("session_id")
+            # Update game ID
+            if "game_id" in message:
+                new_game_id = message["game_id"]
+                if self._game_id != new_game_id:
+                    logger.debug(f"Game ID: {self._game_id} → {new_game_id}")
+                    self._game_id = new_game_id
 
-            if "player_id" in state:
-                if self._player_id != state.get("player_id"):
-                    print('player_id changed', self._player_id, '->', state.get("player_id"))
-                    self._player_id = state.get("player_id")
+            # Update session ID
+            if "session_id" in message:
+                new_session_id = message["session_id"]
+                if self._session_id != new_session_id:
+                    logger.debug(f"Session ID: {self._session_id} → {new_session_id}")
+                    self._session_id = new_session_id
 
-            if "player_name" in state:
-                if self._player_name != state.get("player_name"):
-                    print('player_name changed', self._player_name, '->', state.get("player_name"))
-                    self._player_name = state.get("player_name")
-            
-            # if "is_human" in state:
-            #     if self._is_human != state.get("is_human"):
-            #         print('is_human changed', self._is_human, '->', state.get("is_human"))
-            #         self._is_human = state.get("is_human")
+            # Update player info
+            if "player_id" in message:
+                new_player_id = message["player_id"]
+                if self._player_id != new_player_id:
+                    logger.debug(f"Player ID: {self._player_id} → {new_player_id}")
+                    self._player_id = new_player_id
 
-            # if "state" in state:
-            #     if "playersAlive" in state.get("state"):
-            #         if self._players_alive != state.get("state").get("playersAlive"):
-            #             print('players_alive changed', self._players_alive, '->', state.get("state").get("playersAlive"))
-            #             self._players_alive = state.get("state").get("playersAlive")
-            #     if "civsEver" in state.get("state"):
-            #         if self._civs_ever != state.get("state").get("civsEver"):
-            #             print('civs_ever changed', self._civs_ever, '->', state.get("state").get("civsEver"))
-            #             self._civs_ever = state.get("state").get("civsEver")
+            if "player_name" in message:
+                new_player_name = message["player_name"]
+                if self._player_name != new_player_name:
+                    logger.debug(f"Player: {self._player_name} → {new_player_name}")
+                    self._player_name = new_player_name
 
             self._last_update_time = time.time()
 
     def get_metadata(self) -> dict[str, Any]:
-        """Get all metadata as dictionary.
-        
+        """Get all metadata as a dictionary.
+
         Returns:
-            Dictionary containing all game state metadata
+            Dictionary with all game state metadata
         """
         with self._lock:
             return {
@@ -104,6 +97,20 @@ class GameState:
                 "connected": self._connected,
                 "last_update_time": self._last_update_time,
             }
+
+    def reset(self) -> None:
+        """Reset state (e.g., on disconnect or new game)."""
+        with self._lock:
+            self._turn_number = None
+            self._game_id = None
+            self._session_id = None
+            self._player_id = None
+            self._player_name = None
+            self._connected = False
+            self._last_update_time = 0.0
+            logger.info("Game state reset")
+
+    # Properties for convenient access
 
     @property
     def turn_number(self) -> Optional[int]:
@@ -137,7 +144,7 @@ class GameState:
 
     @property
     def connected(self) -> bool:
-        """Whether pipe connection is active."""
+        """Whether game is connected."""
         with self._lock:
             return self._connected
 
@@ -146,4 +153,3 @@ class GameState:
         """Timestamp of last update."""
         with self._lock:
             return self._last_update_time
-

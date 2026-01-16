@@ -131,18 +131,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # Log tool request (outgoing from LLM to orchestrator)
-        from .game_logger import get_game_logger
-        game_logger = get_game_logger()
-        game_logger.log_message({
+        from .message_logger import get_message_logger
+        get_message_logger().log({
             "type": "tool_request",
-            "direction": "outgoing",
-            "game_id": self.mcp_server.current_game_id,
-            "session_id": self.mcp_server.current_session_id,
-            "player_id": self.mcp_server.current_player_id,
-            "turn": self.mcp_server.turn_number,
             "tool": tool_name,
             "arguments": arguments,
-        })
+        }, direction="outgoing")
 
         try:
             result = self.mcp_server.execute_tool(tool_name, arguments)

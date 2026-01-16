@@ -64,9 +64,9 @@ class CivMCPServer:
 
         self.uptime = time.monotonic()
 
-        # Game logger (JSONL file) - singleton, shared across all components
-        from .game_logger import get_game_logger
-        self._message_logger = get_game_logger()
+        # Message logger (JSONL file) - singleton, shared across all components
+        from .message_logger import get_message_logger
+        self._message_logger = get_message_logger()
 
     def get_about(self) -> dict[str, Any]:
         """Get information about the MCP server."""
@@ -274,17 +274,11 @@ class CivMCPServer:
             result = {"error": str(e), "status": "error"}
 
         # Log tool response (incoming to LLM from orchestrator)
-        with self._lock:
-            self._message_logger.log_message({
-                "type": "tool_response",
-                "direction": "incoming",
-                "game_id": self.current_game_id,
-                "session_id": self.current_session_id,
-                "player_id": self.current_player_id,
-                "turn": self.turn_number,
-                "tool": name,
-                "result": result,
-            })
+        self._message_logger.log({
+            "type": "tool_response",
+            "tool": name,
+            "result": result,
+        }, direction="incoming")
 
         return result
 
@@ -595,7 +589,7 @@ class CivMCPServer:
     def _get_notifications(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get notifications from the log (filtered by current game)."""
         game_id = self.current_game_id
-        notifications = self._message_logger.get_messages(
+        notifications = self._message_logger.query(
             message_type="notification", game_id=game_id
         )
         return {
@@ -654,22 +648,15 @@ class CivMCPServer:
         if current_game_only and game_id is None:
             game_id = self.current_game_id
 
-        messages = self._message_logger.get_messages(
+        messages = self._message_logger.query(
             message_type=message_type,
-            turn_number=turn_number,
+            direction=direction,
+            turn=turn_number,
             player_id=player_id,
             game_id=game_id,
             session_id=session_id,
+            limit=limit,
         )
-
-        if direction:
-            messages = [m for m in messages if m.get("direction") == direction]
-
-        # Filter out deleted messages (those with a 'deleted' timestamp)
-        messages = [m for m in messages if "deleted" not in m]
-
-        # Most recent first, limited
-        messages = list(reversed(messages))[:limit]
 
         return {
             "messages": messages,

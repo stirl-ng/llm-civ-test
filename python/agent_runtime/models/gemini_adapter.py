@@ -5,18 +5,14 @@ from typing import Any, Dict, List, Optional
 
 from .base import ModelAdapter
 
-# Try to import LLM logger (may not be available if orchestrator not running)
+# Try to import message logger (may not be available if orchestrator not running)
+_message_logger = None
 try:
-    import sys
-    from pathlib import Path
-    # Add orchestrator to path if needed
-    orchestrator_path = Path(__file__).parent.parent.parent / "orchestrator"
-    if str(orchestrator_path) not in sys.path:
-        sys.path.insert(0, str(orchestrator_path))
-    from llm_logger import get_llm_logger
-    _llm_logger_available = True
+    # Import from orchestrator package (requires python/ to be in PYTHONPATH)
+    from orchestrator.message_logger import get_message_logger
+    _message_logger = get_message_logger()
 except ImportError:
-    _llm_logger_available = False
+    pass  # Logger not available, logging will be skipped
 
 
 class GeminiChat(ModelAdapter):
@@ -40,7 +36,7 @@ class GeminiChat(ModelAdapter):
         self._genai = genai
         self._model_name = model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
-        
+
         if not self._api_key:
             raise ValueError(
                 "Gemini API key is required. "
@@ -53,7 +49,7 @@ class GeminiChat(ModelAdapter):
             self._client = self._genai.Client(api_key=self._api_key)
         except Exception as e:
             raise ValueError(f"Failed to initialize Gemini client: {e}") from e
-        
+
         # Validate model exists by trying to list models
         try:
             self._validate_model()
@@ -61,14 +57,14 @@ class GeminiChat(ModelAdapter):
             # If validation fails, try to list available models
             error_msg = str(e)
             error_type = type(e).__name__
-            
+
             is_not_found = (
                 "NotFound" in error_type
                 or "not found" in error_msg.lower()
                 or "404" in error_msg
                 or "is not found" in error_msg.lower()
             )
-            
+
             if is_not_found:
                 try:
                     available_models = self._list_available_models()
@@ -84,7 +80,7 @@ class GeminiChat(ModelAdapter):
                         f"Failed to list available models: {list_error}"
                     ) from e
             raise
-    
+
     def _validate_model(self) -> None:
         """Validate that the model exists by listing models."""
         models = self._list_available_models()
@@ -92,7 +88,7 @@ class GeminiChat(ModelAdapter):
             raise ValueError(
                 f"Model '{self._model_name}' not in available models:\n  {'\n'.join(models)}"
             )
-    
+
     def _list_available_models(self) -> List[str]:
         """List available models from the API."""
         available_models = []
@@ -111,21 +107,21 @@ class GeminiChat(ModelAdapter):
     def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         Generate a response from Gemini given a chat message list.
-        
+
         Converts OpenAI-style message format to Gemini's format.
         System messages are prepended to the first user message.
         """
         temperature = kwargs.get("temperature", 0.2)
-        
+
         # Build contents list from messages
         # New API uses a list of content parts
         contents = []
         system_parts = []
-        
+
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            
+
             if role == "system":
                 system_parts.append(content)
             elif role == "user":
@@ -138,7 +134,7 @@ class GeminiChat(ModelAdapter):
                 contents.append({"role": "user", "parts": [{"text": full_content}]})
             elif role == "assistant":
                 contents.append({"role": "model", "parts": [{"text": content}]})
-        
+
         # If we have system parts but no user messages, prepend to first content
         if system_parts and contents:
             first_content = contents[0]
@@ -146,16 +142,15 @@ class GeminiChat(ModelAdapter):
                 first_parts = first_content.get("parts", [])
                 if first_parts and "text" in first_parts[0]:
                     first_parts[0]["text"] = "\n\n".join(system_parts + [first_parts[0]["text"]])
-        
+
         # If no contents, return empty
         if not contents:
             return ""
-        
+
         # Log LLM request
         request_uuid = None
-        if _llm_logger_available:
+        if _message_logger:
             try:
-                logger = get_llm_logger()
                 # Convert contents back to messages format for logging
                 log_messages = []
                 for content in contents:
@@ -163,14 +158,14 @@ class GeminiChat(ModelAdapter):
                     parts = content.get("parts", [])
                     text = " ".join(p.get("text", "") for p in parts if "text" in p)
                     log_messages.append({"role": role, "content": text})
-                request_uuid = logger.log_request(
+                request_uuid = _message_logger.log_llm_request(
                     model=self._model_name,
                     messages=log_messages,
                     temperature=temperature,
                 )
             except Exception:
                 pass  # Don't fail if logging fails
-        
+
         # Generate response using new API
         try:
             response = self._client.models.generate_content(
@@ -178,12 +173,12 @@ class GeminiChat(ModelAdapter):
                 contents=contents,
                 config={"temperature": temperature}
             )
-            
+
             # Check for finish reasons that indicate problems
             if response.candidates:
                 candidate = response.candidates[0]
                 finish_reason = getattr(candidate, 'finish_reason', None)
-                
+
                 if finish_reason:
                     finish_reason_str = str(finish_reason)
                     # Check for MALFORMED_FUNCTION_CALL - this happens when Gemini tries to use
@@ -207,10 +202,10 @@ class GeminiChat(ModelAdapter):
                             "Gemini API blocked the response due to recitation policy. "
                             f"Finish reason: {finish_reason_str}"
                         )
-            
+
             # Get response text, handling None case
             response_text = (response.text or "").strip()
-            
+
             # If response is empty and we have a problematic finish reason, provide better error
             if not response_text and response.candidates:
                 candidate = response.candidates[0]
@@ -223,31 +218,30 @@ class GeminiChat(ModelAdapter):
                             "The model tried to use native function calling but no functions are registered. "
                             "Ensure the system prompt instructs the model to output function calls as TEXT only."
                         )
-            
+
             # Log LLM response
-            if _llm_logger_available and request_uuid:
+            if _message_logger and request_uuid:
                 try:
-                    logger = get_llm_logger()
-                    logger.log_response(
+                    _message_logger.log_llm_response(
                         request_uuid=request_uuid,
                         response=response_text,
                     )
                 except Exception:
                     pass  # Don't fail if logging fails
-            
+
             return response_text
         except Exception as e:
             # If model not found during generation, list available models
             error_msg = str(e)
             error_type = type(e).__name__
-            
+
             is_not_found = (
                 "NotFound" in error_type
                 or "not found" in error_msg.lower()
                 or "404" in error_msg
                 or "is not found" in error_msg.lower()
             )
-            
+
             if is_not_found:
                 try:
                     available_models = self._list_available_models()
@@ -263,4 +257,3 @@ class GeminiChat(ModelAdapter):
                         f"Failed to list available models: {list_error}"
                     ) from e
             raise
-
