@@ -386,24 +386,15 @@ def parse_logs() -> dict[str, Any]:
                 seen_turns.add(turn)
             last_turn = turn
 
-        # Turn start - system prompt and briefing
+        # Turn start - system prompt only (briefing comes via llm_request)
         if msg_type == "turn_start_messages":
             system_prompt = msg.get("system_prompt", "")
-            briefing = msg.get("briefing", "")
 
             if system_prompt:
                 conversation.append({
                     "type": "message",
                     "role": "system",
                     "content": system_prompt,
-                    "turn": turn or 0,
-                    "tokens": 0,
-                })
-            if briefing:
-                conversation.append({
-                    "type": "message",
-                    "role": "user",
-                    "content": briefing,
                     "turn": turn or 0,
                     "tokens": 0,
                 })
