@@ -1,33 +1,18 @@
-from __future__ import annotations
+"""RAG tool stub - placeholder for future XML/game data retrieval."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from .base import Tool
 
 
 class LocalRAG(Tool):
-    """
-    Minimal local RAG stub. In a real setup, this would load a vector store.
-    Here we accept a small in-memory corpus at construction and return the
-    best matching snippet by simple substring/length heuristic.
-    """
+    """Placeholder for future RAG over Civ V game data (XML files, etc.)."""
 
-    def __init__(self, corpus: List[str] | None = None):
-        self.corpus = corpus or []
+    def __init__(self, **kwargs: Any):
+        pass  # Accept any kwargs for forward compatibility
 
-    def name(self) -> str:  # pragma: no cover - trivial
+    def name(self) -> str:
         return "rag_search"
 
     def run(self, arguments: Dict[str, Any]) -> Any:
-        query = str(arguments.get("query", "")).lower()
-        if not query:
-            return {"matches": []}
-        scored = []
-        for doc in self.corpus:
-            text = doc.lower()
-            score = text.count(query) * 2 + (len(set(query.split()) & set(text.split())))
-            if score:
-                scored.append((score, doc))
-        scored.sort(reverse=True, key=lambda x: x[0])
-        return {"matches": [d for _, d in scored[:3]]}
-
+        return {"status": "not_implemented", "message": "RAG not yet implemented"}

@@ -61,6 +61,10 @@ class MessageLogger:
         self._lock = threading.Lock()
         self._game_state: Optional["GameState"] = None
 
+        # Manual overrides for when GameState isn't available (e.g., run.py)
+        self._manual_turn: Optional[int] = None
+        self._manual_game_id: Optional[int] = None
+
         # Ensure directory and file exist
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self.log_file.touch(exist_ok=True)
@@ -74,20 +78,39 @@ class MessageLogger:
         with self._lock:
             self._game_state = game_state
 
-    def _get_game_metadata(self) -> dict[str, Any]:
-        """Get current game metadata from GameState."""
-        if self._game_state is None:
-            return {}
+    def set_turn(self, turn: Optional[int], game_id: Optional[int] = None) -> None:
+        """Manually set turn/game_id (for use when GameState isn't available).
 
-        try:
-            return {
-                "turn": self._game_state.turn_number,
-                "game_id": self._game_state.game_id,
-                "session_id": self._game_state.session_id,
-                "player_id": self._game_state.player_id,
-            }
-        except AttributeError:
-            return {}
+        Args:
+            turn: Current turn number
+            game_id: Optional game ID
+        """
+        with self._lock:
+            self._manual_turn = turn
+            if game_id is not None:
+                self._manual_game_id = game_id
+
+    def _get_game_metadata(self) -> dict[str, Any]:
+        """Get current game metadata from GameState or manual overrides."""
+        # Try GameState first
+        if self._game_state is not None:
+            try:
+                return {
+                    "turn": self._game_state.turn_number,
+                    "game_id": self._game_state.game_id,
+                    "session_id": self._game_state.session_id,
+                    "player_id": self._game_state.player_id,
+                }
+            except AttributeError:
+                pass
+
+        # Fall back to manual values
+        result = {}
+        if self._manual_turn is not None:
+            result["turn"] = self._manual_turn
+        if self._manual_game_id is not None:
+            result["game_id"] = self._manual_game_id
+        return result
 
     def log(
         self,

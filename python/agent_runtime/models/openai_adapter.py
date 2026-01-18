@@ -5,18 +5,13 @@ from typing import Any, Dict, List, Optional
 
 from .base import ModelAdapter
 
-# Try to import LLM logger (may not be available if orchestrator not running)
+# Try to import message logger (may not be available if orchestrator not running)
+_message_logger = None
 try:
-    import sys
-    from pathlib import Path
-    # Add orchestrator to path if needed
-    orchestrator_path = Path(__file__).parent.parent.parent / "orchestrator"
-    if str(orchestrator_path) not in sys.path:
-        sys.path.insert(0, str(orchestrator_path))
-    from llm_logger import get_llm_logger
-    _llm_logger_available = True
+    from orchestrator.message_logger import get_message_logger
+    _message_logger = get_message_logger()
 except ImportError:
-    _llm_logger_available = False
+    pass
 
 
 class OpenAIChat(ModelAdapter):
@@ -57,21 +52,19 @@ class OpenAIChat(ModelAdapter):
 
     def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         temperature = kwargs.get("temperature", 0.2)
-        
+
         # Log LLM request
         request_uuid = None
-        if _llm_logger_available:
+        if _message_logger:
             try:
-                logger = get_llm_logger()
-                request_uuid = logger.log_request(
+                request_uuid = _message_logger.log_llm_request(
                     model=self._model,
                     messages=messages,
                     temperature=temperature,
-                    **{k: v for k, v in kwargs.items() if k != "temperature"}
                 )
             except Exception:
                 pass  # Don't fail if logging fails
-        
+
         res = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
@@ -79,17 +72,26 @@ class OpenAIChat(ModelAdapter):
         )
         msg = res.choices[0].message
         response_text = (msg.content or "").strip()
-        
-        # Log LLM response
-        if _llm_logger_available and request_uuid:
+
+        # Extract token usage
+        usage = {}
+        if res.usage:
+            usage = {
+                "prompt_tokens": res.usage.prompt_tokens,
+                "completion_tokens": res.usage.completion_tokens,
+                "total_tokens": res.usage.total_tokens,
+            }
+
+        # Log LLM response with token usage
+        if _message_logger and request_uuid:
             try:
-                logger = get_llm_logger()
-                logger.log_response(
+                _message_logger.log_llm_response(
                     request_uuid=request_uuid,
                     response=response_text,
+                    **usage,
                 )
             except Exception:
                 pass  # Don't fail if logging fails
-        
+
         return response_text
 
