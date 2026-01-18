@@ -3,6 +3,7 @@
 Thread-safe class that holds game metadata (turn, game_id, session_id, etc.)
 Updated from DLL messages, read by MCP server and other components.
 """
+from __future__ import annotations
 
 import logging
 import threading
@@ -29,6 +30,9 @@ class GameState:
         self._session_id: Optional[int] = None
         self._player_id: Optional[int] = None
         self._player_name: Optional[str] = None
+
+        # Turn blockers (from turn_start message)
+        self._blockers: list[dict[str, Any]] = []
 
         # Connection status
         self._connected: bool = False
@@ -79,6 +83,12 @@ class GameState:
                     logger.debug(f"Player: {self._player_name} → {new_player_name}")
                     self._player_name = new_player_name
 
+            # Update blockers from turn_start messages
+            if "blockers" in message:
+                self._blockers = message["blockers"]
+                if self._blockers:
+                    logger.debug(f"Blockers: {[b.get('type') for b in self._blockers]}")
+
             self._last_update_time = time.time()
 
     def get_metadata(self) -> dict[str, Any]:
@@ -94,6 +104,7 @@ class GameState:
                 "session_id": self._session_id,
                 "player_id": self._player_id,
                 "player_name": self._player_name,
+                "blockers": self._blockers,
                 "connected": self._connected,
                 "last_update_time": self._last_update_time,
             }
@@ -106,6 +117,7 @@ class GameState:
             self._session_id = None
             self._player_id = None
             self._player_name = None
+            self._blockers = []
             self._connected = False
             self._last_update_time = 0.0
             logger.info("Game state reset")
@@ -153,3 +165,9 @@ class GameState:
         """Timestamp of last update."""
         with self._lock:
             return self._last_update_time
+
+    @property
+    def blockers(self) -> list[dict[str, Any]]:
+        """Current end-turn blockers."""
+        with self._lock:
+            return self._blockers.copy()

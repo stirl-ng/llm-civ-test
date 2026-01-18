@@ -6,6 +6,7 @@ Simple loop: poll for turns → call LLM → execute tools → repeat until end_
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import time
@@ -19,6 +20,13 @@ from agent_runtime.models import get_model
 from agent_runtime.tools import build_tools
 from agent_runtime.prompts.system_prompt import build_system_prompt
 from agent_runtime.briefing import generate_turn_briefing
+
+# Optional: set turn on message logger for LLM response logging
+try:
+    from orchestrator.message_logger import get_message_logger
+    _message_logger = get_message_logger()
+except ImportError:
+    _message_logger = None
 
 
 def load_config(config_arg: str) -> dict[str, Any]:
@@ -75,18 +83,87 @@ def parse_tool_calls(response: str) -> list[dict[str, Any]]:
 
     Looks for patterns like:
     - mcp_call(tool="get_units", arguments={})
+    - mcp_call(tool="send_action", arguments={"action": {"kind": "move_unit", "unit_id": 1001}})
     - end_turn(turn=5)
     """
     tool_calls = []
 
+    def extract_nested_dict(text: str, start_pos: int) -> tuple[str, int] | None:
+        """Extract a nested dictionary string, handling braces properly.
+        Returns (dict_string, end_position) or None if not found.
+        """
+        if start_pos >= len(text) or text[start_pos] != '{':
+            return None
+        
+        brace_count = 0
+        i = start_pos
+        in_string = False
+        escape_next = False
+        
+        while i < len(text):
+            char = text[i]
+            
+            if escape_next:
+                escape_next = False
+                i += 1
+                continue
+            
+            if char == '\\':
+                escape_next = True
+                i += 1
+                continue
+            
+            if char == '"' and not escape_next:
+                in_string = not in_string
+            elif not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        return (text[start_pos:i+1], i + 1)
+            
+            i += 1
+        
+        return None
+
     # Match function_name(args)
-    for match in re.finditer(r'(\w+)\(([^)]*)\)', response):
+    for match in re.finditer(r'(\w+)\(', response):
         func_name = match.group(1)
-        args_str = match.group(2)
-
+        args_start = match.end()
+        
+        # Find matching closing paren, handling nested structures
+        paren_count = 1
+        i = args_start
+        in_string = False
+        escape_next = False
+        
+        while i < len(response) and paren_count > 0:
+            char = response[i]
+            
+            if escape_next:
+                escape_next = False
+                i += 1
+                continue
+            
+            if char == '\\':
+                escape_next = True
+            elif char == '"' and not escape_next:
+                in_string = not in_string
+            elif not in_string:
+                if char == '(':
+                    paren_count += 1
+                elif char == ')':
+                    paren_count -= 1
+            
+            i += 1
+        
+        if paren_count != 0:
+            continue
+        
+        args_str = response[args_start:i-1]
+        
         try:
-            args = {}
-
             # Handle end_turn directly
             if func_name == "end_turn":
                 turn_match = re.search(r'turn\s*=\s*(\d+)', args_str)
@@ -101,44 +178,50 @@ def parse_tool_calls(response: str) -> list[dict[str, Any]]:
             if func_name == "mcp_call":
                 # Extract tool name
                 tool_match = re.search(r'tool\s*=\s*["\']([^"\']+)["\']', args_str)
-                if tool_match:
-                    args["tool"] = tool_match.group(1)
-
-                # Extract arguments dict
-                args_match = re.search(r'arguments\s*=\s*(\{[^}]*\})', args_str)
-                if args_match:
+                if not tool_match:
+                    continue
+                
+                tool_name = tool_match.group(1)
+                
+                # Extract arguments dict (handle nested structures)
+                args_match = re.search(r'arguments\s*=\s*', args_str)
+                if not args_match:
+                    continue
+                
+                dict_start = args_match.end()
+                dict_result = extract_nested_dict(args_str, dict_start)
+                
+                if dict_result:
+                    dict_str, _ = dict_result
                     try:
-                        args["arguments"] = json.loads(args_match.group(1))
+                        # Try JSON first
+                        parsed_args = json.loads(dict_str)
                     except json.JSONDecodeError:
                         try:
-                            import ast
-                            args["arguments"] = ast.literal_eval(args_match.group(1))
+                            # Fall back to ast.literal_eval for Python dict syntax
+                            parsed_args = ast.literal_eval(dict_str)
                         except (ValueError, SyntaxError):
-                            args["arguments"] = {}
+                            parsed_args = {}
                 else:
-                    args["arguments"] = {}
-
-                # Check if it's end_turn via mcp_call
-                if args.get("tool") == "end_turn":
-                    turn = args.get("arguments", {}).get("turn")
+                    parsed_args = {}
+                
+                # Handle end_turn via mcp_call
+                if tool_name == "end_turn":
+                    turn = parsed_args.get("turn")
                     if turn is not None:
                         tool_calls.append({
                             "tool": "end_turn",
                             "arguments": {"turn": turn}
                         })
-                        continue
-
-                if "tool" in args:
-                    tool_calls.append({"tool": "mcp_call", "arguments": args})
-
-            # Handle update_knowledge_base
-            elif func_name == "update_knowledge_base":
-                for key in ("operation", "section_id", "content"):
-                    match = re.search(rf'{key}\s*=\s*["\']([^"\']+)["\']', args_str)
-                    if match:
-                        args[key] = match.group(1)
-                if args:
-                    tool_calls.append({"tool": "update_knowledge_base", "arguments": args})
+                else:
+                    # Regular mcp_call - pass through the tool name and arguments
+                    tool_calls.append({
+                        "tool": "mcp_call",
+                        "arguments": {
+                            "tool": tool_name,
+                            "arguments": parsed_args
+                        }
+                    })
 
         except Exception:
             continue
@@ -146,45 +229,54 @@ def parse_tool_calls(response: str) -> list[dict[str, Any]]:
     return tool_calls
 
 
-def execute_tool(tool_call: dict[str, Any], tools: list, base_url: str, turn: int) -> dict[str, Any]:
-    """Execute a single tool call."""
+def execute_tool(tool_call: dict[str, Any], tool_registry: dict[str, Any], base_url: str, turn: int) -> dict[str, Any]:
+    """Execute a single tool call.
+    
+    Args:
+        tool_call: Dict with 'tool' and 'arguments' keys
+        tool_registry: Dict mapping tool names to tool instances
+        base_url: Orchestrator base URL
+        turn: Current turn number
+    """
     name = tool_call.get("tool")
     args = tool_call.get("arguments", {})
 
-    # Handle end_turn specially
+    # Handle end_turn specially (direct HTTP call, not via tool registry)
     if name == "end_turn":
         result = call_tool(base_url, "end_turn", {"turn": args.get("turn", turn)})
         result["_end_turn"] = True
         return result
 
-    # Find and run the tool
-    for tool in tools:
-        tool_name = tool.name() if hasattr(tool, "name") else str(tool)
+    # Look up tool in registry
+    tool = tool_registry.get(name)
+    if not tool:
+        return {"ok": False, "error": f"Unknown tool: {name}"}
 
-        if name == "mcp_call" and tool_name == "mcp_call":
-            result = tool.run(args)
-            if args.get("tool") == "end_turn":
-                result["_end_turn"] = True
-            return result
-
-        if name == tool_name:
-            return tool.run(args)
-
-    return {"status": "error", "error": f"Unknown tool: {name}"}
+    # Execute the tool
+    result = tool.run(args)
+    
+    # Check if this mcp_call was actually an end_turn
+    if name == "mcp_call" and args.get("tool") == "end_turn":
+        result["_end_turn"] = True
+    
+    return result
 
 
 # --- Core Turn Loop ---
 
-def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.0) -> dict[str, Any]:
+def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.0, blockers: list | None = None) -> dict[str, Any]:
     """Run a single turn: LLM → parse → execute → repeat until end_turn."""
     start_time = time.time()
 
-    # Find MCP tool for briefing
-    mcp_tool = next((t for t in tools if getattr(t, "name", lambda: "")() == "mcp_call"), None)
+    # Build tool registry (dict mapping tool names to tool instances)
+    tool_registry: dict[str, Any] = {}
+    for tool in tools:
+        tool_name = tool.name() if hasattr(tool, "name") else str(tool)
+        tool_registry[tool_name] = tool
 
     # Build initial messages
-    system_prompt = build_system_prompt(tools, knowledge_base=None)
-    briefing = generate_turn_briefing(mcp_tool, None, turn) if mcp_tool else f"Turn {turn}. What would you like to do?"
+    system_prompt = build_system_prompt(tools)
+    briefing = generate_turn_briefing(turn, blockers=blockers)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -195,6 +287,16 @@ def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.
     tool_calls_total = 0
 
     print(f"  Starting turn {turn}...")
+
+    # Tell logger about current turn so LLM responses get tagged
+    if _message_logger:
+        _message_logger.set_turn(turn)
+        # Log the system prompt and briefing at turn start
+        _message_logger.log({
+            "type": "turn_start_messages",
+            "system_prompt": system_prompt,
+            "briefing": briefing,
+        }, direction="outgoing")
 
     while True:
         # Check timeout
@@ -207,7 +309,9 @@ def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.
         # Call LLM
         try:
             response = model.generate(messages, temperature=0.2)
-            preview = response[:150] + "..." if len(response) > 150 else response
+            # Remove tool calls from preview (patterns like mcp_call(...) or end_turn(...))
+            preview_text = re.sub(r'\w+\([^)]*\)', '', response).strip()
+            preview = preview_text[:150] + "..." if len(preview_text) > 150 else preview_text
             print(f"  [{iterations}] LLM: {preview}")
         except Exception as e:
             print(f"  ✗ LLM error: {e}")
@@ -234,26 +338,40 @@ def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.
             display = f"{name}({inner_tool})" if inner_tool else name
 
             try:
-                result = execute_tool(call, tools, base_url, turn)
-                status = "✓" if result.get("status") != "error" else "✗"
-                print(f"    {status} {display}")
+                result = execute_tool(call, tool_registry, base_url, turn)
+                is_ok = result.get("ok", True)
+                print(f"    {'✓' if is_ok else '✗'} {display}")
 
                 # Check for end_turn
                 if result.get("_end_turn"):
-                    if result.get("status") == "error" or "error" in result.get("result", {}):
-                        error = result.get("error") or result.get("result", {}).get("message", "blocked")
+                    if not is_ok:
+                        error = result.get("blocking_type") or result.get("message") or "blocked"
                         print(f"    ⚠️  end_turn blocked: {error}")
-                        messages.append({"role": "user", "content": f"end_turn failed: {error}. Please resolve and try again."})
+                        messages.append({"role": "user", "content": json.dumps(result)})
                     else:
-                        print(f"  ✓ Turn {turn} ended")
-                        return {"turn": turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": True}
+                        # Verify turn actually advanced (turn_end_ack is sent before async completion)
+                        print(f"    ⏳ Waiting for turn to advance...")
+                        turn_advanced = False
+                        for _ in range(20):  # Wait up to 10 seconds
+                            time.sleep(0.5)
+                            status = get_status(base_url)
+                            if status and status.get("turn") != turn:
+                                turn_advanced = True
+                                break
+
+                        if turn_advanced:
+                            print(f"  ✓ Turn {turn} ended")
+                            return {"turn": turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": True}
+                        else:
+                            print(f"    ⚠️  turn_end_ack received but turn didn't advance")
+                            messages.append({"role": "user", "content": json.dumps({"error": "turn_not_advanced", "message": "end_turn was acknowledged but turn didn't advance. Something may still be blocking."})})
                 else:
                     # Add result to conversation
-                    messages.append({"role": "user", "content": f"Tool {name} result: {json.dumps(result)}"})
+                    messages.append({"role": "user", "content": json.dumps(result)})
 
             except Exception as e:
                 print(f"    ✗ {display}: {e}")
-                messages.append({"role": "user", "content": f"Tool {name} error: {e}"})
+                messages.append({"role": "user", "content": json.dumps({"error": str(e), "tool": name})})
 
     return {"turn": turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
 
@@ -289,11 +407,18 @@ def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0,
                 continue
 
             # New turn!
+            blockers = status.get("blockers", [])
             print(f"\n{'='*50}")
             print(f"TURN {current_turn}")
+            if blockers:
+                print(f"Blockers: {[b.get('type') for b in blockers]}")
             print(f"{'='*50}")
 
-            result = run_turn(model, tools, base_url, current_turn, turn_timeout)
+            # Update logger with turn info
+            if _message_logger:
+                _message_logger.set_turn(current_turn, status.get("game_id"))
+
+            result = run_turn(model, tools, base_url, current_turn, turn_timeout, blockers=blockers)
 
             print(f"  Summary: {result['iterations']} iterations, {result['tool_calls']} tool calls")
 

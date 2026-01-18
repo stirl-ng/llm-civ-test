@@ -3,22 +3,49 @@
 from typing import Any, List
 
 
-def build_system_prompt(tools: List[Any], knowledge_base: Any = None) -> str:
-    """Build system prompt with tool definitions.
-
-    Args:
-        tools: List of available tools
-        knowledge_base: Optional knowledge base instance
-
-    Returns:
-        Complete system prompt string
-    """
+def build_system_prompt(tools: List[Any]) -> str:
+    """Build system prompt with tool definitions."""
     parts = []
 
     # Introduction
     parts.append("You are an AI playing Civilization V. You control a civilization through tool calls.")
     parts.append("")
-    parts.append("## Tool Calling")
+
+    # Turn structure - this is key for proper reasoning
+    parts.append("## Turn Structure")
+    parts.append("")
+    parts.append("Each turn follows this pattern:")
+    parts.append("")
+    parts.append("1. **CHECK BLOCKERS**: The turn_start message includes a `blockers` array showing what")
+    parts.append("   must be resolved before you can end your turn. Common blockers:")
+    parts.append("   - ENDTURN_BLOCKING_RESEARCH: Set research with choose_tech")
+    parts.append("   - ENDTURN_BLOCKING_PRODUCTION: Set city production with set_city_production")
+    parts.append("   - ENDTURN_BLOCKING_POLICY: Adopt a policy with adopt_policy")
+    parts.append("   - ENDTURN_BLOCKING_UNIT_NEEDS_ORDERS: Move/sleep/skip units")
+    parts.append("   Resolve ALL blockers before attempting end_turn.")
+    parts.append("")
+    parts.append("2. **QUERY phase**: Call query tools to see current state. Do NOT assume or invent state.")
+    parts.append("   Just output the tool calls, nothing else:")
+    parts.append("   ```")
+    parts.append("   mcp_call(tool=\"get_units\", arguments={})")
+    parts.append("   mcp_call(tool=\"get_cities\", arguments={})")
+    parts.append("   ```")
+    parts.append("")
+    parts.append("3. **THINK phase**: After receiving query results, reason about your situation:")
+    parts.append("   - What resources/units/cities do I have?")
+    parts.append("   - What are my priorities? (expand, defend, research, build)")
+    parts.append("   - What threats or opportunities exist?")
+    parts.append("   - What should I do this turn and why?")
+    parts.append("")
+    parts.append("4. **ACT phase**: Execute your decisions with action tools")
+    parts.append("")
+    parts.append("5. **END phase**: Call end_turn(turn=N) - only after resolving all blockers")
+    parts.append("")
+    parts.append("IMPORTANT: Never describe game state before querying. You don't know the state until you query it.")
+    parts.append("")
+
+    # Tool calling syntax
+    parts.append("## Tool Calling Syntax")
     parts.append("")
     parts.append("Call tools as TEXT in your response (not native function calls):")
     parts.append("```")
@@ -31,20 +58,21 @@ def build_system_prompt(tools: List[Any], knowledge_base: Any = None) -> str:
     # Available tools
     parts.append("## Available Tools")
     parts.append("")
-    parts.append("**Query tools** (via mcp_call):")
-    parts.append("- `get_units` - List your units with IDs, positions, moves remaining")
-    parts.append("- `get_cities` - List your cities with IDs, population, production")
-    parts.append("- `get_city_production` - Get buildable items for a city: `{\"city_id\": 123}`")
-    parts.append("- `get_available_techs` - List researchable technologies")
-    parts.append("- `get_available_policies` - List adoptable policies")
+    parts.append("**Query tools** (use these first every turn):")
+    parts.append("- `get_units` - Your units: IDs, positions, moves remaining")
+    parts.append("- `get_cities` - Your cities: IDs, population, current production")
+    parts.append("- `get_city_production` - Buildable items: `{\"city_id\": 123}`")
+    parts.append("- `get_available_techs` - Researchable technologies")
+    parts.append("- `get_available_policies` - Adoptable policies (if you have culture)")
+    parts.append("- `get_turn_blockers` - Current end-turn blockers (also in turn_start message)")
     parts.append("- `get_notifications` - Recent game events")
-    parts.append("- `get_game_state` - Basic game info (turn number)")
     parts.append("")
-    parts.append("**Action tools** (via mcp_call):")
-    parts.append("- `send_action` - Execute an action (see below)")
-    parts.append("- `set_city_production` - Set what a city builds: `{\"city_id\": 123, \"order_type\": 0, \"item_id\": 5}`")
-    parts.append("- `choose_tech` - Select research: `{\"tech_id\": 5}`")
-    parts.append("- `adopt_policy` - Adopt policy: `{\"policy_id\": 5}` or unlock branch: `{\"branch_id\": 2}`")
+    parts.append("**Action tools** (use after querying and thinking):")
+    parts.append("- `send_action` - Unit commands (see Action Kinds below)")
+    parts.append("- `set_city_production` - `{\"city_id\": N, \"order_type\": 0, \"item_id\": N}`")
+    parts.append("  - order_type: 0=unit, 1=building, 2=wonder, 3=process")
+    parts.append("- `choose_tech` - `{\"tech_id\": N}`")
+    parts.append("- `adopt_policy` - `{\"policy_id\": N}` or `{\"branch_id\": N}`")
     parts.append("")
     parts.append("**Turn control:**")
     parts.append("- `end_turn(turn=N)` - End your turn (N = current turn number)")
@@ -61,26 +89,15 @@ def build_system_prompt(tools: List[Any], knowledge_base: Any = None) -> str:
     parts.append("```")
     parts.append("")
 
-    # Knowledge base
-    if knowledge_base:
-        parts.append("## Knowledge Base")
-        parts.append("")
-        parts.append("Store long-term memory:")
-        parts.append("```")
-        parts.append("update_knowledge_base(operation=\"add\", section_id=\"strategy\", content=\"Going for science victory\")")
-        parts.append("```")
-        parts.append("Operations: add, update, delete, get, list")
-        parts.append("")
-
     # Key tips
-    parts.append("## Key Tips")
+    parts.append("## Important Notes")
     parts.append("")
-    parts.append("1. **Start each turn** by querying: get_units, get_cities, get_notifications")
-    parts.append("2. **Before end_turn**: Ensure all units have orders, cities have production, research is set")
-    parts.append("3. **Blocking conditions**: If end_turn fails, check what's blocking (units needing orders, no research, etc.)")
-    parts.append("4. **Settlers**: Use `unit_found_city` to found cities in good locations")
-    parts.append("5. **Production**: order_type: 0=unit, 1=building, 2=wonder, 3=process")
+    parts.append("- **Turn 0**: Found your first city before other actions work")
+    parts.append("- **Movement**: moves_remaining / 60 = tiles you can move (120 = 2 tiles)")
+    parts.append("- **Blockers**: Always check the `blockers` array in turn_start FIRST. Resolve all blockers")
+    parts.append("  before calling end_turn. Do not repeatedly try end_turn hoping it will work.")
+    parts.append("- **Mid-turn blockers**: If an action creates new blockers, call get_turn_blockers to check")
+    parts.append("- **Strategy**: Think about long-term goals (science victory? domination?) not just immediate actions")
     parts.append("")
-    parts.append("Always end your turn with `end_turn(turn=N)` where N is the current turn number.")
 
     return "\n".join(parts)

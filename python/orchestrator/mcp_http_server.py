@@ -28,7 +28,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args):
         """Override to use our logger."""
-        logger.info(format % args)
+        # Suppress logging for health check endpoints to reduce spam
+        message = format % args
+        if "/status" in message or "/health" in message:
+            logger.debug(message)
+        else:
+            logger.info(message)
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
@@ -59,6 +64,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                     "session_id": metadata.get("session_id"),
                     "player_id": metadata.get("player_id"),
                     "player_name": metadata.get("player_name"),
+                    "blockers": metadata.get("blockers", []),
                 })
             else:
                 self._send_json({
@@ -68,6 +74,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                     "session_id": None,
                     "player_id": None,
                     "player_name": None,
+                    "blockers": [],
                 })
 
         elif self.path == "/about":
@@ -140,28 +147,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         try:
             result = self.mcp_server.execute_tool(tool_name, arguments)
-            
-            # Check if result indicates an error
-            if result.get("status") == "error" or "error" in result:
-                error_msg = result.get("error", "Unknown error")
-                logger.error(f"Tool '{tool_name}' returned error: {error_msg}")
-                logger.error(f"Tool '{tool_name}' arguments were: {json.dumps(arguments, indent=2)}")
-                logger.error(f"Tool '{tool_name}' result: {json.dumps(result, indent=2)}")
-                self._send_json({"status": "error", "result": result}, status=500)
-            else:
-                self._send_json({"status": "success", "result": result})
+            # Check if result indicates an error (DLL uses "type": "error", others use "status": "error")
+            is_error = (
+                result.get("status") == "error"
+                or result.get("type") == "error"
+                or "error" in result
+            )
+            # Return result directly with 'ok' flag - no nested 'result' wrapper
+            result["ok"] = not is_error
+            self._send_json(result)
         except Exception as e:
             import traceback
-            logger.error(f"Exception executing tool '{tool_name}': {e}")
-            logger.error(f"Tool '{tool_name}' arguments were: {json.dumps(arguments, indent=2)}")
-            logger.error(traceback.format_exc())
-            self._send_json({
-                "status": "error",
-                "result": {
-                    "error": f"Internal server error: {str(e)}",
-                    "status": "error"
-                }
-            }, status=500)
+            logger.error(f"Exception executing tool '{tool_name}': {e} arguments: {arguments} traceback: {traceback.format_exc()}")
+            self._send_json({"ok": False, "error": str(e)}, status=500)
 
     def _send_json(self, data: dict, status: int = 200):
         """Send JSON response."""
