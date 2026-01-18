@@ -58,11 +58,20 @@ TEMPLATE = """
             gap: 20px;
             height: calc(100vh - 140px);
         }
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
         .panel {
             background: #16213e;
             border-radius: 8px;
             padding: 15px;
             overflow-y: auto;
+        }
+        .panel.half {
+            flex: 1;
+            min-height: 0;
         }
         .panel h2 {
             font-size: 12px;
@@ -176,6 +185,30 @@ TEMPLATE = """
 
         .empty { color: #666; font-style: italic; padding: 20px; text-align: center; }
 
+        /* Notifications */
+        .notification {
+            padding: 8px 10px;
+            margin-bottom: 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: #1a2a4a;
+            border-left: 3px solid #4a9eff;
+        }
+        .notification .summary {
+            font-weight: bold;
+            color: #4a9eff;
+            margin-bottom: 2px;
+        }
+        .notification .message {
+            color: #aaa;
+            font-size: 10px;
+        }
+        .notification .meta {
+            font-size: 9px;
+            color: #666;
+            margin-top: 4px;
+        }
+
         .collapse-btn {
             font-size: 10px;
             color: #666;
@@ -227,19 +260,37 @@ TEMPLATE = """
             {% endif %}
         </div>
 
-        <div class="panel">
-            <h2>Tool Calls ({{ tool_calls|length }})</h2>
-            {% if tool_calls %}
-                {% for tool in tool_calls %}
-                <div class="tool-call {{ 'success' if tool.ok else 'error' }}">
-                    <span class="icon">{{ '✓' if tool.ok else '✗' }}</span>
-                    <span class="name">{{ tool.name }}</span>
-                    <span class="turn-badge">T{{ tool.turn }}</span>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="empty">No tool calls yet</div>
-            {% endif %}
+        <div class="right-column">
+            <div class="panel half">
+                <h2>Notifications ({{ notifications|length }})</h2>
+                {% if notifications %}
+                    {% for notif in notifications %}
+                    <div class="notification">
+                        <div class="summary">{{ notif.summary }}</div>
+                        {% if notif.message and notif.message != notif.summary %}
+                        <div class="message">{{ notif.message }}</div>
+                        {% endif %}
+                        <div class="meta">T{{ notif.turn }} | Type {{ notif.notif_type }}</div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty">No notifications yet</div>
+                {% endif %}
+            </div>
+            <div class="panel half">
+                <h2>Tool Calls ({{ tool_calls|length }})</h2>
+                {% if tool_calls %}
+                    {% for tool in tool_calls %}
+                    <div class="tool-call {{ 'success' if tool.ok else 'error' }}">
+                        <span class="icon">{{ '✓' if tool.ok else '✗' }}</span>
+                        <span class="name">{{ tool.name }}</span>
+                        <span class="turn-badge">T{{ tool.turn }}</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty">No tool calls yet</div>
+                {% endif %}
+            </div>
         </div>
     </div>
     <script>
@@ -308,6 +359,7 @@ def parse_logs() -> dict[str, Any]:
         "estimated_cost": 0.0,
         "conversation": [],
         "tool_calls": [],
+        "notifications": [],
         "last_update": datetime.now().strftime("%H:%M:%S"),
     }
 
@@ -340,9 +392,10 @@ def parse_logs() -> dict[str, Any]:
             data["current_turn"] = msg["turn"]
             break
 
-    # Build conversation and tool calls
+    # Build conversation, tool calls, and notifications
     conversation = []
     tool_calls = []
+    notifications = []
     seen_turns = set()
     last_turn = None
 
@@ -442,6 +495,17 @@ def parse_logs() -> dict[str, Any]:
                 "turn": turn or 0,
             })
 
+        # Notifications from DLL
+        if msg_type == "notification":
+            notifications.append({
+                "summary": msg.get("summary", ""),
+                "message": msg.get("message", ""),
+                "turn": msg.get("turn", 0),
+                "notif_type": msg.get("notification_type", "?"),
+                "x": msg.get("x"),
+                "y": msg.get("y"),
+            })
+
     # Only show last N messages to avoid overwhelming the UI
     max_messages = 50
     if len(conversation) > max_messages:
@@ -452,8 +516,14 @@ def parse_logs() -> dict[str, Any]:
     if len(tool_calls) > max_tools:
         tool_calls = tool_calls[-max_tools:]
 
+    # Only show last N notifications
+    max_notifs = 50
+    if len(notifications) > max_notifs:
+        notifications = notifications[-max_notifs:]
+
     data["conversation"] = conversation
     data["tool_calls"] = tool_calls
+    data["notifications"] = notifications
 
     # Estimate cost (rough: $0.001 per 1K tokens for cheap models)
     data["estimated_cost"] = data["total_tokens"] * 0.000001
