@@ -26,10 +26,7 @@ This mimics how a skilled human plays: they already know what they want to build
 
 ## Known Issues (TODO)
 
-### 1. adopt_policy doesn't deduct culture
-`SetHasPolicy()` sets the policy but doesn't deduct culture cost. Need to use proper game method (check `CvPlayerPolicies::DoAdoptPolicy` or network message handler).
-
-### 2. Unhandled popups block end_turn
+### 1. Unhandled popups block end_turn
 These popups block `end_turn` but aren't reported via pipe:
 - Meet civilization dialog
 - Goody hut rewards
@@ -38,7 +35,7 @@ These popups block `end_turn` but aren't reported via pipe:
 
 Need to add auto-close handlers in Lua for these.
 
-### 3. NO_ENDTURN_BLOCKING_TYPE gives no info
+### 2. NO_ENDTURN_BLOCKING_TYPE gives no info
 When `blocking_type_id` is -1, we get no diagnostic info about what's blocking. Need to investigate what causes this state.
 
 ## Architecture Overview
