@@ -29,12 +29,18 @@ TEMPLATE = """
     <meta http-equiv="refresh" content="5">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
         body {
             font-family: 'SF Mono', 'Consolas', monospace;
             background: #1a1a2e;
             color: #eee;
             padding: 20px;
             line-height: 1.4;
+            display: flex;
+            flex-direction: column;
         }
         .header {
             display: flex;
@@ -44,6 +50,7 @@ TEMPLATE = """
             background: #16213e;
             border-radius: 8px;
             margin-bottom: 20px;
+            flex-shrink: 0;
         }
         .header h1 { font-size: 18px; color: #0f0; }
         .status { display: flex; gap: 20px; font-size: 14px; }
@@ -56,7 +63,8 @@ TEMPLATE = """
             display: grid;
             grid-template-columns: 2fr 1fr;
             gap: 20px;
-            height: calc(100vh - 140px);
+            flex: 1;
+            min-height: 0;
         }
         .right-column {
             display: flex;
