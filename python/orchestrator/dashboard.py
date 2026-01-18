@@ -301,48 +301,6 @@ TEMPLATE = """
             </div>
         </div>
     </div>
-    <script>
-        // Smart auto-scroll: only scroll to bottom if user was already at bottom
-        (function() {
-            const chatPanel = document.querySelector('.columns .panel');
-            const storageKey = 'dashboard_scroll_state';
-
-            // Check if scrolled to bottom (with small threshold)
-            function isAtBottom(el) {
-                return el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-            }
-
-            // On page load: restore scroll or go to bottom
-            function restoreScroll() {
-                const saved = sessionStorage.getItem(storageKey);
-                if (saved) {
-                    const state = JSON.parse(saved);
-                    if (state.wasAtBottom) {
-                        chatPanel.scrollTop = chatPanel.scrollHeight;
-                    } else {
-                        chatPanel.scrollTop = state.scrollTop;
-                    }
-                } else {
-                    // First load - scroll to bottom
-                    chatPanel.scrollTop = chatPanel.scrollHeight;
-                }
-            }
-
-            // Before refresh: save scroll state
-            function saveScroll() {
-                sessionStorage.setItem(storageKey, JSON.stringify({
-                    wasAtBottom: isAtBottom(chatPanel),
-                    scrollTop: chatPanel.scrollTop
-                }));
-            }
-
-            // Save state before page unloads (refresh)
-            window.addEventListener('beforeunload', saveScroll);
-
-            // Restore on load
-            restoreScroll();
-        })();
-    </script>
 </body>
 </html>
 """
@@ -529,9 +487,10 @@ def parse_logs() -> dict[str, Any]:
     if len(notifications) > max_notifs:
         notifications = notifications[-max_notifs:]
 
-    data["conversation"] = conversation
-    data["tool_calls"] = tool_calls
-    data["notifications"] = notifications
+    # Reverse so newest is at top
+    data["conversation"] = list(reversed(conversation))
+    data["tool_calls"] = list(reversed(tool_calls))
+    data["notifications"] = list(reversed(notifications))
 
     # Estimate cost (rough: $0.001 per 1K tokens for cheap models)
     data["estimated_cost"] = data["total_tokens"] * 0.000001
