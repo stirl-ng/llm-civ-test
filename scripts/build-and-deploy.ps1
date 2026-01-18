@@ -8,16 +8,20 @@
 .PARAMETER DeployOnly
     Skip build, just deploy existing files
 
+.PARAMETER NoClear
+    Don't clear log files
+
 .EXAMPLE
-    .\tools\build-and-deploy.ps1
-    .\tools\build-and-deploy.ps1 -Configuration Debug
-    .\tools\build-and-deploy.ps1 -DeployOnly
+    .\scripts\build-and-deploy.ps1
+    .\scripts\build-and-deploy.ps1 -Configuration Debug
+    .\scripts\build-and-deploy.ps1 -DeployOnly
 #>
 
 param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [switch]$DeployOnly
+    [switch]$DeployOnly,
+    [switch]$NoClear
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,16 +30,23 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CppDll = Join-Path $RepoRoot "Community-Patch-DLL"
 $Solution = Join-Path $CppDll "VoxPopuli_vs2013.sln"
-$BuildOutput = Join-Path $CppDll "BuildOutput\$Configuration\CvGameCore_Expansion2.dll"
 $ModSource = Join-Path $CppDll "(1) Community Patch"
 $ModDest = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Sid Meier's Civilization 5\MODS\(1) Community Patch"
-$LogFile = Join-Path $env:LOCALAPPDATA "LLMCiv\llmbridge.log"
+$LogDir = Join-Path $RepoRoot "python\logs"
+
+# Possible DLL output locations (MSBuild may vary)
+$PossibleDllPaths = @(
+    (Join-Path $CppDll "BuildOutput\$Configuration\CvGameCore_Expansion2.dll"),
+    (Join-Path $CppDll "$Configuration\CvGameCore_Expansion2.dll"),
+    (Join-Path $CppDll "Mod\CvGameCore_Expansion2.dll")
+)
 
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Community Patch Build & Deploy" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Configuration: $Configuration"
-Write-Host "Mod destination: $ModDest"
+Write-Host "Mod source:    $ModSource"
+Write-Host "Mod dest:      $ModDest"
 Write-Host ""
 
 # Find MSBuild
@@ -45,13 +56,32 @@ function Find-MSBuild {
         $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
         if ($msbuild) { return $msbuild }
     }
+    # Fallback to common locations
+    $fallbacks = @(
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe"
+    )
+    foreach ($fb in $fallbacks) {
+        if (Test-Path $fb) { return $fb }
+    }
     throw "MSBuild not found. Install Visual Studio with C++ workload."
+}
+
+# Find the built DLL
+function Find-BuiltDll {
+    foreach ($path in $PossibleDllPaths) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+    return $null
 }
 
 # Build
 if (-not $DeployOnly) {
     Write-Host "Building DLL..." -ForegroundColor Yellow
     $msbuild = Find-MSBuild
+    Write-Host "  Using MSBuild: $msbuild" -ForegroundColor Gray
 
     & $msbuild $Solution /t:Build /p:Configuration=$Configuration /p:Platform=Win32 /v:minimal /nologo
 
@@ -59,33 +89,66 @@ if (-not $DeployOnly) {
         throw "Build failed!"
     }
     Write-Host "  Build OK" -ForegroundColor Green
+
+    # Find and copy DLL to mod source folder
+    Write-Host "Locating built DLL..." -ForegroundColor Yellow
+    $BuiltDll = Find-BuiltDll
+    if ($BuiltDll) {
+        Write-Host "  Found: $BuiltDll" -ForegroundColor Gray
+        Copy-Item $BuiltDll -Destination $ModSource -Force
+        Write-Host "  Copied DLL to mod source" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: DLL not found in expected locations. Searched:" -ForegroundColor Yellow
+        foreach ($path in $PossibleDllPaths) {
+            Write-Host "    - $path" -ForegroundColor Gray
+        }
+        Write-Host "  Continuing with existing DLL in mod folder..." -ForegroundColor Yellow
+    }
 }
 
 # Clear logs
-Write-Host "Clearing logs..." -ForegroundColor Yellow
-if (Test-Path $LogFile) {
-    Remove-Item $LogFile -Force
-    Write-Host "  Cleared: $LogFile" -ForegroundColor Green
-} else {
-    Write-Host "  No log file found" -ForegroundColor Gray
-}
+if (-not $NoClear) {
+    Write-Host "Clearing logs..." -ForegroundColor Yellow
+    $cleared = $false
 
-# Copy DLL to mod source folder
-Write-Host "Updating DLL in mod folder..." -ForegroundColor Yellow
-if (Test-Path $BuildOutput) {
-    Copy-Item $BuildOutput -Destination $ModSource -Force
-    Write-Host "  Copied DLL to mod source" -ForegroundColor Green
-} else {
-    throw "DLL not found at: $BuildOutput"
+    # Clear orchestrator logs
+    if (Test-Path $LogDir) {
+        Get-ChildItem $LogDir -Filter "*.jsonl" | ForEach-Object {
+            Remove-Item $_.FullName -Force
+            Write-Host "  Cleared: $($_.Name)" -ForegroundColor Green
+            $cleared = $true
+        }
+    }
+
+    # Clear old log location
+    $OldLogFile = Join-Path $env:LOCALAPPDATA "LLMCiv\llmbridge.log"
+    if (Test-Path $OldLogFile) {
+        Remove-Item $OldLogFile -Force
+        Write-Host "  Cleared: llmbridge.log" -ForegroundColor Green
+        $cleared = $true
+    }
+
+    if (-not $cleared) {
+        Write-Host "  No log files found" -ForegroundColor Gray
+    }
 }
 
 # Deploy mod folder
 Write-Host "Deploying mod to Civ V..." -ForegroundColor Yellow
 if (Test-Path $ModDest) {
     Remove-Item $ModDest -Recurse -Force
+    Write-Host "  Removed old mod folder" -ForegroundColor Gray
 }
 Copy-Item $ModSource -Destination $ModDest -Recurse -Force
 Write-Host "  Deployed to: $ModDest" -ForegroundColor Green
+
+# Show DLL info
+$DeployedDll = Join-Path $ModDest "CvGameCore_Expansion2.dll"
+if (Test-Path $DeployedDll) {
+    $dllInfo = Get-Item $DeployedDll
+    Write-Host "  DLL size: $([math]::Round($dllInfo.Length / 1MB, 2)) MB" -ForegroundColor Gray
+    Write-Host "  DLL date: $($dllInfo.LastWriteTime)" -ForegroundColor Gray
+}
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
