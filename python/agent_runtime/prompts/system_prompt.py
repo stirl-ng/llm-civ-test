@@ -93,7 +93,7 @@ def build_system_prompt(tools: List[Any]) -> str:
     parts.append("## Important Notes")
     parts.append("")
     parts.append("- **Turn 0**: Found your first city before other actions work")
-    parts.append("- **Movement**: moves_remaining / 60 = tiles you can move (120 = 2 tiles)")
+    parts.append("- **Movement**: moves_remaining / 60 = tiles you can move (120 = 2 tiles). Using the \"Explore (Automated)\" order is strongly recommended.")
     parts.append("- **Blockers**: Always check the `blockers` array in turn_start FIRST. Resolve all blockers")
     parts.append("  before calling end_turn. Do not repeatedly try end_turn hoping it will work.")
     parts.append("- **Mid-turn blockers**: If an action creates new blockers, call get_turn_blockers to check")
