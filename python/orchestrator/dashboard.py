@@ -155,6 +155,85 @@ TEMPLATE = """
             color: var(--accent-yellow);
         }
 
+        .game-selector {
+            position: relative;
+            display: inline-block;
+        }
+
+        .game-selector-btn {
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+
+        .game-selector-btn:hover {
+            background: var(--bg-panel-alt);
+            border-color: var(--accent-cyan);
+        }
+
+        .game-selector-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            margin-top: 4px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            min-width: 200px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+        }
+
+        .game-selector:hover .game-selector-dropdown {
+            display: block;
+        }
+
+        .game-selector-item {
+            padding: 10px 12px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            transition: background 0.2s ease;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .game-selector-item:last-child {
+            border-bottom: none;
+        }
+
+        .game-selector-item:hover {
+            background: var(--bg-input);
+            color: var(--text-primary);
+        }
+
+        .game-selector-item.current {
+            background: var(--bg-input);
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .game-selector-item .game-id {
+            font-weight: 600;
+        }
+
+        .game-selector-item .msg-count {
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+
         /* Main layout */
         .columns {
             display: grid;
@@ -559,10 +638,16 @@ TEMPLATE = """
             color: var(--accent-red);
         }
 
-        .debug-toggle {
+        .toggle-buttons {
             position: fixed;
             bottom: 16px;
             right: 16px;
+            display: flex;
+            gap: 8px;
+            z-index: 100;
+        }
+
+        .toggle-btn {
             background: var(--bg-panel);
             border: 1px solid var(--border-subtle);
             color: var(--text-secondary);
@@ -571,13 +656,25 @@ TEMPLATE = """
             font-size: 11px;
             text-decoration: none;
             transition: all 0.2s ease;
-            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
-        .debug-toggle:hover {
+        .toggle-btn:hover {
             background: var(--bg-panel-alt);
-            color: var(--accent-purple);
+            transform: translateY(-1px);
+        }
+
+        .toggle-btn.active {
+            background: var(--bg-panel-alt);
             border-color: var(--accent-purple);
+            color: var(--accent-purple);
+        }
+
+        .toggle-btn.active:hover {
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
         }
 
         /* Unrecognized types list */
@@ -589,6 +686,131 @@ TEMPLATE = """
         .unrecognized-item {
             color: var(--accent-yellow);
             padding: 2px 0;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-overlay.visible {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-subtle);
+            border-radius: 12px;
+            max-width: 900px;
+            max-height: 90vh;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .modal-close:hover {
+            background: var(--bg-input);
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-section {
+            margin-bottom: 20px;
+        }
+
+        .modal-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .modal-section h4 {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--accent-cyan);
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .modal-json {
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: var(--text-secondary);
+        }
+
+        .tool-call {
+            cursor: pointer;
+            position: relative;
+        }
+
+        .tool-call::after {
+            content: '›';
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 16px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .tool-call:hover {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .tool-call:hover::after {
+            opacity: 1;
         }
     </style>
 </head>
@@ -603,6 +825,25 @@ TEMPLATE = """
             <div class="status-item">
                 Turn <span class="turn-display">{{ current_turn or '—' }}</span>
             </div>
+            {% if available_games %}
+            <div class="status-item">
+                <div class="game-selector">
+                    <button class="game-selector-btn">
+                        Game {{ game_id or '—' }}
+                        <span>▾</span>
+                    </button>
+                    <div class="game-selector-dropdown">
+                        {% for game in available_games %}
+                        <a href="?game_id={{ game.game_id }}{% if debug_mode %}&debug=1{% endif %}{% if verbose_mode %}&verbose=1{% endif %}"
+                           class="game-selector-item {{ 'current' if game.is_current else '' }}">
+                            <span class="game-id">{{ game.game_id }}</span>
+                            <span class="msg-count">{{ game.message_count }} msgs</span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
             <div class="status-item" style="color: var(--text-muted);">
                 {{ last_update }}
             </div>
@@ -711,7 +952,7 @@ TEMPLATE = """
                 <h2>Tool Activity <span class="count-badge">{{ tool_calls|length }}</span></h2>
                 {% if tool_calls %}
                     {% for tool in tool_calls %}
-                    <div class="tool-call {{ tool.category }} {{ 'error' if not tool.ok else '' }}">
+                    <div class="tool-call {{ tool.category }} {{ 'error' if not tool.ok else '' }}" onclick="openToolModal({{ loop.index0 }})">
                         <div class="tool-call-header">
                             <span class="icon">{{ tool.icon }}</span>
                             <span class="name">{{ tool.name }}</span>
@@ -765,9 +1006,79 @@ TEMPLATE = """
         </div>
     </div>
 
-    <a href="?{% if debug_mode %}debug=1&{% endif %}{% if verbose_mode %}{% else %}verbose=1{% endif %}" class="debug-toggle">
-        {{ '📋 Hide Verbose' if verbose_mode else ('🔍 Hide Debug' if debug_mode else '🔍 Debug') }}
-    </a>
+    <div class="toggle-buttons">
+        <a href="?{% if game_id %}game_id={{ game_id }}&{% endif %}{% if not debug_mode %}debug=1{% endif %}{% if verbose_mode %}&verbose=1{% endif %}"
+           class="toggle-btn {% if debug_mode %}active{% endif %}">
+            🔍 Debug
+        </a>
+        <a href="?{% if game_id %}game_id={{ game_id }}&{% endif %}{% if debug_mode %}debug=1&{% endif %}{% if not verbose_mode %}verbose=1{% endif %}"
+           class="toggle-btn {% if verbose_mode %}active{% endif %}">
+            📋 Verbose
+        </a>
+    </div>
+
+    <!-- Tool Detail Modal -->
+    <div class="modal-overlay" id="toolModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>
+                    <span id="modalIcon"></span>
+                    <span id="modalToolName"></span>
+                </h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <h4>Arguments</h4>
+                    <pre class="modal-json" id="modalArguments"></pre>
+                </div>
+                <div class="modal-section">
+                    <h4>Response</h4>
+                    <pre class="modal-json" id="modalResult"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tool data for modal
+        const toolData = {{ tool_calls_json|safe }};
+
+        function openToolModal(index) {
+            const tool = toolData[index];
+            if (!tool) return;
+
+            document.getElementById('modalIcon').textContent = tool.icon;
+            document.getElementById('modalToolName').textContent = tool.name;
+
+            // Handle empty or null arguments/results
+            const args = tool.arguments || {};
+            const result = tool.result || {};
+
+            document.getElementById('modalArguments').textContent = JSON.stringify(args, null, 2);
+            document.getElementById('modalResult').textContent = JSON.stringify(result, null, 2);
+
+            document.getElementById('toolModal').classList.add('visible');
+        }
+
+        function closeModal() {
+            document.getElementById('toolModal').classList.remove('visible');
+        }
+
+        // Close modal on escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // Close modal on overlay click
+        document.getElementById('toolModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+    </script>
 </body>
 </html>
 """
@@ -847,8 +1158,76 @@ ACTION_TOOLS = {
 }
 
 
-def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str, Any]:
-    """Parse JSONL logs and build conversation + tool call list."""
+def filter_tool_calls_from_text(text: str) -> str:
+    """Remove mcp_call() and other tool invocation lines from text.
+
+    This filters out lines like:
+    - mcp_call(tool="...", arguments={...})
+    - end_turn(turn=N)
+    - Other tool-related syntax
+
+    We want to show only the LLM's reasoning and natural language responses,
+    since tool calls are already visualized in the Tool Activity panel.
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    filtered_lines = []
+
+    # Tool patterns to filter out
+    tool_patterns = [
+        "mcp_call(",
+        "end_turn(",
+        "send_action(",
+        "move_unit(",
+        "unit_found_city(",
+        "unit_sleep(",
+        "unit_skip(",
+        "set_city_production(",
+        "choose_tech(",
+        "adopt_policy(",
+        "get_units(",
+        "get_cities(",
+        "get_city_production(",
+        "get_available_techs(",
+        "get_available_policies(",
+        "get_turn_blockers(",
+        "get_notifications(",
+    ]
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip empty lines
+        if not stripped:
+            filtered_lines.append(line)
+            continue
+
+        # Skip lines that match tool call patterns
+        is_tool_call = any(stripped.startswith(pattern) for pattern in tool_patterns)
+        if is_tool_call:
+            continue
+
+        filtered_lines.append(line)
+
+    result = '\n'.join(filtered_lines).strip()
+
+    # Clean up excessive blank lines (more than 2 consecutive)
+    while '\n\n\n' in result:
+        result = result.replace('\n\n\n', '\n\n')
+
+    return result
+
+
+def parse_logs(debug_mode: bool = False, verbose_mode: bool = False, game_id: int | None = None) -> dict[str, Any]:
+    """Parse JSONL logs and build conversation + tool call list.
+
+    Args:
+        debug_mode: Show debug diagnostics panel
+        verbose_mode: Show game events instead of notifications
+        game_id: Filter to specific game_id (None = auto-select most recent)
+    """
     debug = DebugInfo()
     debug.log_file_name = LOG_FILE.name
     debug.file_exists = LOG_FILE.exists()
@@ -868,6 +1247,8 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
         "debug_mode": debug_mode,
         "verbose_mode": verbose_mode,
         "debug": {},
+        "game_id": game_id,
+        "available_games": [],
     }
 
     if not LOG_FILE.exists():
@@ -878,6 +1259,7 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
 
     # Parse all messages
     messages = []
+    game_ids = {}  # game_id -> last_seen_timestamp
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         for line in f:
             debug.total_lines += 1
@@ -891,10 +1273,37 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
                 # Track message types
                 msg_type = msg.get("type", "(no type)")
                 debug.type_counts[msg_type] += 1
+                # Track game_ids
+                msg_game_id = msg.get("game_id")
+                if msg_game_id:
+                    game_ids[msg_game_id] = msg.get("timestamp", "")
             except json.JSONDecodeError as e:
                 debug.parse_errors += 1
                 logger.warning(f"JSON parse error on line {debug.total_lines}: {e}")
                 continue
+
+    # Auto-select most recent game_id if not specified
+    if game_id is None and game_ids:
+        # Use the last game_id seen (most recent)
+        game_id = max(game_ids.keys(), key=lambda gid: game_ids[gid])
+        logger.info(f"Auto-selected most recent game_id: {game_id}")
+
+    # Build list of available games with metadata
+    available_games = []
+    for gid in sorted(game_ids.keys(), key=lambda gid: game_ids[gid], reverse=True):
+        game_msg_count = sum(1 for m in messages if m.get("game_id") == gid)
+        available_games.append({
+            "game_id": gid,
+            "message_count": game_msg_count,
+            "is_current": gid == game_id,
+        })
+    data["available_games"] = available_games
+    data["game_id"] = game_id
+
+    # Filter messages by selected game_id
+    if game_id is not None:
+        messages = [m for m in messages if m.get("game_id") == game_id]
+        logger.info(f"Filtered to {len(messages)} messages for game_id {game_id}")
 
     # Find unrecognized types
     for t in debug.type_counts:
@@ -990,13 +1399,18 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
             tokens = msg.get("total_tokens", 0) or 0
 
             if response:
-                conversation.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": response,
-                    "turn": turn or 0,
-                    "tokens": tokens,
-                })
+                # Filter out tool call syntax - those are shown in Tool Activity panel
+                filtered_response = filter_tool_calls_from_text(response)
+
+                # Only add to conversation if there's meaningful content after filtering
+                if filtered_response:
+                    conversation.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": filtered_response,
+                        "turn": turn or 0,
+                        "tokens": tokens,
+                    })
 
             data["total_tokens"] += tokens
 
@@ -1012,6 +1426,7 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
         if msg_type == "tool_response":
             tool_name = msg.get("tool", "?")
             result = msg.get("result", {})
+            arguments = msg.get("arguments", {})
 
             # Determine if query or action
             category = "query" if tool_name in QUERY_TOOLS else "action"
@@ -1077,6 +1492,8 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
                 "icon": icon,
                 "result_summary": result_summary,
                 "turn": turn or 0,
+                "arguments": arguments,
+                "result": result,
             })
 
         # === GAME EVENTS (verbose mode) ===
@@ -1092,11 +1509,9 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
             })
 
         if msg_type == "turn_start":
-            blockers = msg.get("blockers", [])
-            blocker_types = [b.get("type", "?") for b in blockers]
             game_events.append({
                 "event_type": "Turn Start",
-                "content": f"{len(blockers)} blocker(s): {', '.join(blocker_types[:3])}",
+                "content": f"Turn {turn} started",
                 "turn": turn or 0,
             })
 
@@ -1154,6 +1569,9 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
     data["game_events"] = list(reversed(game_events))
     data["notifications"] = list(reversed(notifications))
 
+    # Create JSON-safe version of tool_calls for modal
+    data["tool_calls_json"] = json.dumps(data["tool_calls"])
+
     # Estimate cost (rough: $0.001 per 1K tokens for cheap models)
     data["estimated_cost"] = data["total_tokens"] * 0.000001
 
@@ -1169,7 +1587,9 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False) -> dict[str
 def dashboard():
     debug_mode = request.args.get("debug") == "1"
     verbose_mode = request.args.get("verbose") == "1"
-    data = parse_logs(debug_mode=debug_mode, verbose_mode=verbose_mode)
+    game_id_str = request.args.get("game_id")
+    game_id = int(game_id_str) if game_id_str else None
+    data = parse_logs(debug_mode=debug_mode, verbose_mode=verbose_mode, game_id=game_id)
     return render_template_string(TEMPLATE, **data)
 
 
@@ -1178,7 +1598,9 @@ def api_data():
     """JSON endpoint for programmatic access."""
     debug_mode = request.args.get("debug") == "1"
     verbose_mode = request.args.get("verbose") == "1"
-    return parse_logs(debug_mode=debug_mode, verbose_mode=verbose_mode)
+    game_id_str = request.args.get("game_id")
+    game_id = int(game_id_str) if game_id_str else None
+    return parse_logs(debug_mode=debug_mode, verbose_mode=verbose_mode, game_id=game_id)
 
 
 def main():
