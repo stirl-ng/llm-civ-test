@@ -1131,6 +1131,11 @@ KNOWN_TYPES = {
     "set_city_production",
     "send_action",
     "end_turn",
+    # Map visualization tools
+    "get_visible_tiles",
+    "get_map_view",
+    "get_unit_build_options",
+    "get_reachable_tiles",
 }
 
 # Query tools (read-only information gathering)
@@ -1142,6 +1147,11 @@ QUERY_TOOLS = {
     "get_available_policies",
     "get_turn_blockers",
     "get_notifications",
+    # Map visualization tools
+    "get_visible_tiles",
+    "get_map_view",
+    "get_unit_build_options",
+    "get_reachable_tiles",
 }
 
 # Action tools (modify game state)
@@ -1194,6 +1204,11 @@ def filter_tool_calls_from_text(text: str) -> str:
         "get_available_policies(",
         "get_turn_blockers(",
         "get_notifications(",
+        # Map visualization tools
+        "get_visible_tiles(",
+        "get_map_view(",
+        "get_unit_build_options(",
+        "get_reachable_tiles(",
     ]
 
     for line in lines:
@@ -1526,6 +1541,24 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False, game_id: in
                     units = result.get("trainable_units", [])
                     buildings = result.get("constructable_buildings", [])
                     result_summary = f"{len(units)} units, {len(buildings)} buildings"
+                # Map visualization tools
+                elif tool_name == "get_visible_tiles":
+                    tiles = result.get("tiles", [])
+                    map_width = result.get("map_width", 0)
+                    map_height = result.get("map_height", 0)
+                    result_summary = f"{len(tiles)} tiles ({map_width}×{map_height} map)"
+                elif tool_name == "get_map_view":
+                    map_data = result.get("map", "")
+                    lines = map_data.count('\n') if map_data else 0
+                    result_summary = f"ASCII map rendered ({lines} lines)"
+                elif tool_name == "get_unit_build_options":
+                    tiles = result.get("tiles", [])
+                    total_builds = sum(len(t.get("available_builds", [])) for t in tiles)
+                    result_summary = f"{len(tiles)} tiles, {total_builds} build options"
+                elif tool_name == "get_reachable_tiles":
+                    tiles = result.get("tiles", [])
+                    attackable = sum(1 for t in tiles if t.get("can_attack"))
+                    result_summary = f"{len(tiles)} tiles ({attackable} attackable)"
 
             tool_calls.append({
                 "name": tool_name,
