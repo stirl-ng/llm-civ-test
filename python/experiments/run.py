@@ -264,8 +264,12 @@ def execute_tool(tool_call: dict[str, Any], tool_registry: dict[str, Any], base_
 
 # --- Core Turn Loop ---
 
-def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.0, blockers: list | None = None) -> dict[str, Any]:
-    """Run a single turn: LLM → parse → execute → repeat until end_turn."""
+def run_turn(model, tools: list, base_url: str, turn: int, timeout: float | None = None, blockers: list | None = None) -> dict[str, Any]:
+    """Run a single turn: LLM → parse → execute → repeat until end_turn.
+
+    Args:
+        timeout: Optional timeout in seconds. None means no timeout (wait indefinitely).
+    """
     start_time = time.time()
 
     # Build tool registry (dict mapping tool names to tool instances)
@@ -299,8 +303,8 @@ def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.
         }, direction="outgoing")
 
     while True:
-        # Check timeout
-        if time.time() - start_time >= timeout:
+        # Check timeout (if set)
+        if timeout is not None and time.time() - start_time >= timeout:
             print(f"  ⚠️  Turn timeout ({timeout}s)")
             break
 
@@ -376,8 +380,37 @@ def run_turn(model, tools: list, base_url: str, turn: int, timeout: float = 300.
     return {"turn": turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
 
 
-def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0, turn_timeout: float = 300.0):
-    """Main loop: poll for turns, run each turn."""
+def archive_logs_for_new_game(game_id: int) -> None:
+    """Archive existing log file when starting a new game."""
+    if not _message_logger:
+        return
+
+    log_file = _message_logger.log_file
+    if not log_file.exists() or log_file.stat().st_size == 0:
+        return
+
+    # Create archive filename with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    archive_name = log_file.stem + f"_game{game_id}_{timestamp}" + log_file.suffix
+    archive_path = log_file.parent / "archive" / archive_name
+
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Move current log to archive
+    import shutil
+    shutil.move(str(log_file), str(archive_path))
+    print(f"  📁 Archived previous game log to {archive_path.name}")
+
+    # Create fresh log file
+    log_file.touch(exist_ok=True)
+
+
+def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0, turn_timeout: float | None = None):
+    """Main loop: poll for turns, run each turn.
+
+    Args:
+        turn_timeout: Optional timeout per turn in seconds. None means no timeout (wait indefinitely).
+    """
     print(f"Connecting to {base_url}...")
 
     # Wait for orchestrator
@@ -392,6 +425,7 @@ def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0,
     print("Connected! Waiting for game...")
 
     last_turn = None
+    last_game_id = None
 
     try:
         while True:
@@ -402,6 +436,21 @@ def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0,
                 continue
 
             current_turn = status.get("turn")
+            current_game_id = status.get("game_id")
+
+            # Check for new game (game_id changed)
+            if current_game_id is not None and last_game_id is not None and current_game_id != last_game_id:
+                print(f"\n{'='*50}")
+                print(f"🎮 NEW GAME DETECTED (game_id: {last_game_id} → {current_game_id})")
+                print(f"{'='*50}")
+                archive_logs_for_new_game(last_game_id)
+                last_turn = None  # Reset turn tracking
+
+            # Update tracked game_id
+            if current_game_id is not None:
+                last_game_id = current_game_id
+
+            # Skip if no new turn
             if current_turn is None or current_turn == last_turn:
                 time.sleep(poll_interval)
                 continue
@@ -409,14 +458,14 @@ def run_game_loop(model, tools: list, base_url: str, poll_interval: float = 2.0,
             # New turn!
             blockers = status.get("blockers", [])
             print(f"\n{'='*50}")
-            print(f"TURN {current_turn}")
+            print(f"TURN {current_turn} (game_id: {current_game_id})")
             if blockers:
                 print(f"Blockers: {[b.get('type') for b in blockers]}")
             print(f"{'='*50}")
 
             # Update logger with turn info
             if _message_logger:
-                _message_logger.set_turn(current_turn, status.get("game_id"))
+                _message_logger.set_turn(current_turn, current_game_id)
 
             result = run_turn(model, tools, base_url, current_turn, turn_timeout, blockers=blockers)
 
@@ -447,7 +496,7 @@ def main():
     print()
 
     poll_interval = cfg.get("orchestrator", {}).get("poll_interval", 2.0)
-    turn_timeout = cfg.get("orchestrator", {}).get("turn_timeout", 300.0)
+    turn_timeout = cfg.get("orchestrator", {}).get("turn_timeout", None)  # None = no timeout
 
     run_game_loop(model, tools, base_url, poll_interval, turn_timeout)
 
