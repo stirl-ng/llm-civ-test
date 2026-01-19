@@ -253,10 +253,10 @@ class CivMCPServer:
         # Some tools don't require send_request (local tools)
         local_tools = {"get_tools", "ping"}
         requires_send_request = name in self._TOOLS and name not in local_tools
-        
+
         if requires_send_request and not self._send_request:
             return {"error": "No send_request callback configured", "status": "error"}
-        
+
         try:
             if name in self._TOOLS:
                 handler_name, _ = self._TOOLS[name]
@@ -274,9 +274,11 @@ class CivMCPServer:
             result = {"error": str(e), "status": "error"}
 
         # Log tool response (incoming to LLM from orchestrator)
+        # Include arguments so dashboard can display them in modal
         self._message_logger.log({
             "type": "tool_response",
             "tool": name,
+            "arguments": arguments,
             "result": result,
         }, direction="incoming")
 
