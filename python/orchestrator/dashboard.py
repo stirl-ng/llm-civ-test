@@ -37,7 +37,6 @@ TEMPLATE = """
 <html>
 <head>
     <title>Civ V LLM Dashboard</title>
-    <meta http-equiv="refresh" content="5">
     <style>
         :root {
             --bg-dark: #0f0f1a;
@@ -931,6 +930,7 @@ TEMPLATE = """
                 <span><span class="stat">${{ "%.4f"|format(estimated_cost) }}</span><span class="stat-label">est cost</span></span>
             </div>
 
+            <div class="conversation-messages">
             {% if conversation %}
                 {% for msg in conversation %}
                     {% if msg.type == 'turn_divider' %}
@@ -945,11 +945,13 @@ TEMPLATE = """
             {% else %}
                 <div class="empty">No conversation yet — waiting for LLM activity</div>
             {% endif %}
+            </div>
         </div>
 
         <div class="right-column">
             <div class="panel half">
                 <h2>Tool Activity <span class="count-badge">{{ tool_calls|length }}</span></h2>
+                <div class="tool-calls-container">
                 {% if tool_calls %}
                     {% for tool in tool_calls %}
                     <div class="tool-call {{ tool.category }} {{ 'error' if not tool.ok else '' }}" onclick="openToolModal({{ loop.index0 }})">
@@ -966,11 +968,13 @@ TEMPLATE = """
                 {% else %}
                     <div class="empty">No tool calls yet</div>
                 {% endif %}
+                </div>
             </div>
 
             {% if verbose_mode %}
             <div class="panel half">
                 <h2>Game Events <span class="count-badge">{{ game_events|length }}</span></h2>
+                <div class="events-container">
                 {% if game_events %}
                     {% for event in game_events %}
                     <div class="game-event">
@@ -981,10 +985,12 @@ TEMPLATE = """
                 {% else %}
                     <div class="empty">No game events yet</div>
                 {% endif %}
+                </div>
             </div>
             {% else %}
             <div class="panel half">
                 <h2>Notifications <span class="count-badge">{{ notifications|length }}</span></h2>
+                <div class="notifications-container">
                 {% if notifications %}
                     {% for notif in notifications %}
                     <div class="notification">
@@ -1001,6 +1007,7 @@ TEMPLATE = """
                 {% else %}
                     <div class="empty">No notifications yet</div>
                 {% endif %}
+                </div>
             </div>
             {% endif %}
         </div>
@@ -1076,6 +1083,272 @@ TEMPLATE = """
         document.getElementById('toolModal').addEventListener('click', function(e) {
             if (e.target === this) {
                 closeModal();
+            }
+        });
+
+        // Auto-refresh without closing modals
+        let refreshInterval;
+
+        function isModalOpen() {
+            return document.getElementById('toolModal').classList.contains('visible');
+        }
+
+        async function refreshData() {
+            // Don't refresh if modal is open
+            if (isModalOpen()) {
+                return;
+            }
+
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const response = await fetch('/api/data?' + params.toString());
+                if (!response.ok) return;
+
+                const data = await response.json();
+
+                // Update header status
+                updateHeader(data);
+
+                // Update stats
+                updateStats(data);
+
+                // Update conversation
+                updateConversation(data);
+
+                // Update tool calls
+                updateToolCalls(data);
+
+                // Update notifications or events (depending on verbose mode)
+                updateRightPanel(data);
+
+                // Update debug panel if in debug mode
+                if (data.debug_mode && data.debug) {
+                    updateDebugPanel(data);
+                }
+            } catch (error) {
+                console.error('Refresh failed:', error);
+            }
+        }
+
+        function updateHeader(data) {
+            // Update connection status
+            const dot = document.querySelector('.dot');
+            const statusText = dot.parentElement.childNodes[2];
+            if (data.connected) {
+                dot.className = 'dot green';
+                statusText.textContent = 'Connected';
+            } else {
+                dot.className = 'dot red';
+                statusText.textContent = 'Disconnected';
+            }
+
+            // Update turn display
+            const turnDisplay = document.querySelector('.turn-display');
+            if (turnDisplay) {
+                turnDisplay.textContent = data.current_turn || '—';
+            }
+
+            // Update last update time
+            const timeElements = document.querySelectorAll('.status-item');
+            const lastElement = timeElements[timeElements.length - 1];
+            if (lastElement) {
+                lastElement.textContent = data.last_update;
+            }
+        }
+
+        function updateStats(data) {
+            const statsBar = document.querySelector('.stats-bar');
+            if (statsBar) {
+                const tokens = data.total_tokens.toLocaleString();
+                const requests = data.total_requests;
+                const cost = data.estimated_cost.toFixed(4);
+                statsBar.innerHTML = `
+                    <span><span class="stat">${tokens}</span><span class="stat-label">tokens</span></span>
+                    <span><span class="stat">${requests}</span><span class="stat-label">requests</span></span>
+                    <span><span class="stat">$${cost}</span><span class="stat-label">est cost</span></span>
+                `;
+            }
+        }
+
+        function updateConversation(data) {
+            const conversationPanel = document.querySelector('.panel');
+            if (!conversationPanel) return;
+
+            const countBadge = conversationPanel.querySelector('.count-badge');
+            if (countBadge) {
+                countBadge.textContent = data.conversation.length;
+            }
+
+            // Save scroll position
+            const scrollPos = conversationPanel.scrollTop;
+            const wasAtBottom = scrollPos + conversationPanel.clientHeight >= conversationPanel.scrollHeight - 50;
+
+            // Find the conversation container
+            const conversationContainer = conversationPanel.querySelector('.conversation-messages');
+            if (!conversationContainer) return;
+
+            if (data.conversation.length === 0) {
+                conversationContainer.innerHTML = '<div class="empty">No conversation yet — waiting for LLM activity</div>';
+            } else {
+                let html = '';
+                for (const msg of data.conversation) {
+                    if (msg.type === 'turn_divider') {
+                        html += `<div class="turn-divider">TURN ${msg.turn}</div>`;
+                    } else {
+                        const tokens = msg.tokens ? `<span class="tokens">${msg.tokens} tok</span>` : '';
+                        html += `
+                            <div class="chat-message ${msg.role}">
+                                <div class="role">${msg.role}${tokens}</div>
+                                <div class="content">${escapeHtml(msg.content)}</div>
+                            </div>
+                        `;
+                    }
+                }
+                conversationContainer.innerHTML = html;
+            }
+
+            // Restore scroll (or scroll to bottom if was at bottom)
+            if (wasAtBottom) {
+                conversationPanel.scrollTop = conversationPanel.scrollHeight;
+            } else {
+                conversationPanel.scrollTop = scrollPos;
+            }
+        }
+
+        function updateToolCalls(data) {
+            const toolPanel = document.querySelector('.panel.half');
+            if (!toolPanel) return;
+
+            const countBadge = toolPanel.querySelector('.count-badge');
+            if (countBadge) {
+                countBadge.textContent = data.tool_calls.length;
+            }
+
+            // Update global toolData for modal
+            toolData.length = 0;
+            toolData.push(...data.tool_calls);
+
+            // Save scroll position
+            const scrollPos = toolPanel.scrollTop;
+
+            // Find container
+            const container = toolPanel.querySelector('.tool-calls-container');
+            if (!container) return;
+
+            if (data.tool_calls.length === 0) {
+                container.innerHTML = '<div class="empty">No tool calls yet</div>';
+            } else {
+                let html = '';
+                for (let i = 0; i < data.tool_calls.length; i++) {
+                    const tool = data.tool_calls[i];
+                    const errorClass = tool.ok ? '' : 'error';
+                    const resultClass = tool.ok ? 'success' : 'error';
+                    const resultHtml = tool.result_summary ?
+                        `<div class="tool-call-result ${resultClass}">${escapeHtml(tool.result_summary)}</div>` : '';
+
+                    html += `
+                        <div class="tool-call ${tool.category} ${errorClass}" onclick="openToolModal(${i})">
+                            <div class="tool-call-header">
+                                <span class="icon">${tool.icon}</span>
+                                <span class="name">${escapeHtml(tool.name)}</span>
+                                <span class="turn-badge">T${tool.turn}</span>
+                            </div>
+                            ${resultHtml}
+                        </div>
+                    `;
+                }
+                container.innerHTML = html;
+            }
+
+            // Restore scroll position
+            toolPanel.scrollTop = scrollPos;
+        }
+
+        function updateRightPanel(data) {
+            const panels = document.querySelectorAll('.panel.half');
+            const rightPanel = panels.length > 1 ? panels[1] : null;
+            if (!rightPanel) return;
+
+            const heading = rightPanel.querySelector('h2');
+            const countBadge = rightPanel.querySelector('.count-badge');
+
+            // Save scroll position
+            const scrollPos = rightPanel.scrollTop;
+
+            if (data.verbose_mode) {
+                // Update game events
+                heading.childNodes[0].textContent = 'Game Events ';
+                if (countBadge) countBadge.textContent = data.game_events.length;
+
+                const container = rightPanel.querySelector('.events-container');
+                if (!container) return;
+
+                if (data.game_events.length === 0) {
+                    container.innerHTML = '<div class="empty">No game events yet</div>';
+                } else {
+                    let html = '';
+                    for (const event of data.game_events) {
+                        html += `
+                            <div class="game-event">
+                                <div class="event-type">${escapeHtml(event.event_type)}</div>
+                                <div class="event-content">${escapeHtml(event.content)}</div>
+                            </div>
+                        `;
+                    }
+                    container.innerHTML = html;
+                }
+            } else {
+                // Update notifications
+                heading.childNodes[0].textContent = 'Notifications ';
+                if (countBadge) countBadge.textContent = data.notifications.length;
+
+                const container = rightPanel.querySelector('.notifications-container');
+                if (!container) return;
+
+                if (data.notifications.length === 0) {
+                    container.innerHTML = '<div class="empty">No notifications yet</div>';
+                } else {
+                    let html = '';
+                    for (const notif of data.notifications) {
+                        const messageHtml = notif.message && notif.message !== notif.summary ?
+                            `<div class="message">${escapeHtml(notif.message)}</div>` : '';
+                        html += `
+                            <div class="notification">
+                                <div class="summary">${escapeHtml(notif.summary)}</div>
+                                ${messageHtml}
+                                <div class="meta">
+                                    <span>T${notif.turn}</span>
+                                    <span>Type ${notif.notif_type}</span>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    container.innerHTML = html;
+                }
+            }
+
+            // Restore scroll position
+            rightPanel.scrollTop = scrollPos;
+        }
+
+        function updateDebugPanel(data) {
+            // This would be complex to update - skip for now since debug mode is rare
+            // User can refresh page manually if needed
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Start auto-refresh
+        refreshInterval = setInterval(refreshData, 5000);
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
             }
         });
     </script>
