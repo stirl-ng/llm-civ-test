@@ -27,16 +27,21 @@ The implementation adds:
 
 ## Manual Integration Steps
 
-### Step 1: Add C++ Commands to CvGame.cpp
+### ✅ Step 1: Add C++ Commands to CvGame.cpp (COMPLETE!)
 
 **File:** `Community-Patch-DLL/CvGameCoreDLL_Expansion2/CvGame.cpp`
 
-**Location:** Inside `CvGame::HandlePipeCommand()`, after the `get_turn_blockers` handler (around line 3277)
+**Status:** ✅ **INTEGRATED** (commit `15013c6`)
 
-**Action:**
-1. Open `Community-Patch-DLL/new_commands.cpp`
-2. Copy the three `else if` blocks for the new commands
-3. Paste them into `CvGame.cpp` at line 3277 (right after the closing brace of `get_turn_blockers` and before the `select_pantheon` handler)
+The three new command handlers have been integrated into `CvGame::HandlePipeCommand()`:
+- `get_visible_tiles` at line 3278
+- `get_unit_build_options` at line 3358
+- `get_reachable_tiles` at line 3486
+
+**Original Instructions (for reference):**
+~~1. Open `Community-Patch-DLL/new_commands.cpp`~~
+~~2. Copy the three `else if` blocks for the new commands~~
+~~3. Paste them into `CvGame.cpp` at line 3277 (right after the closing brace of `get_turn_blockers` and before the `select_pantheon` handler)~~
 
 **What to paste:**
 ```cpp
