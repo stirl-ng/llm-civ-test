@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .base import RequestToolTool
 from .mcp import MCPClientTool
 
 
@@ -16,6 +17,9 @@ def build_tools(configs: List[Dict[str, Any]] | None, base_url: Optional[str] = 
         List of tool instances
     """
     tools: List[Any] = []
+    # Always include request_tool for capturing hallucinated tool requests
+    tools.append(RequestToolTool())
+
     for cfg in configs or []:
         kind = (cfg.get("kind") or cfg.get("type") or "").lower()
         if kind == "mcp":

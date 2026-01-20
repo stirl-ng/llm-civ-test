@@ -95,6 +95,16 @@ def build_system_prompt(tools: List[Any]) -> str:
     parts.append("- `{\"kind\": \"unit_skip\", \"unit_id\": 123}` - Skip without fortifying (rarely needed)")
     parts.append("")
 
+    # Tool requests
+    parts.append("## Missing a Tool?")
+    parts.append("")
+    parts.append("If you need functionality that no existing tool provides, use `request_tool` to log it:")
+    parts.append("```")
+    parts.append('mcp_call(tool="request_tool", arguments={"tool_name": "get_enemy_positions", "description": "Query visible enemy unit positions", "parameters": {"radius": "int"}, "use_case": "Planning defensive moves"})')
+    parts.append("```")
+    parts.append("This logs your request for future implementation. Be specific about what you need and why.")
+    parts.append("")
+
     # Key tips
     parts.append("## Important Notes")
     parts.append("")
@@ -106,6 +116,7 @@ def build_system_prompt(tools: List[Any]) -> str:
     parts.append("  - Moving every unit every turn wastes time and is unnecessary")
     parts.append("- **Blockers**: If end_turn fails, the error will tell you what's blocking. Use get_turn_blockers to check")
     parts.append("  for blockers proactively, or wait for end_turn to report them. Do not repeatedly try end_turn hoping it will work.")
+    parts.append("  If end_turn fails with ENDTURN_BLOCKING_UNITS, consider using get_units to find the unit and then use send_action to order it")
     parts.append("- **Mid-turn blockers**: Actions can create new blockers (e.g., city production finishing). Use get_turn_blockers to check")
     parts.append("- **Strategy**: Think about long-term goals (science victory? domination?) not just immediate actions")
     parts.append("")
