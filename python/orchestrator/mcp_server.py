@@ -323,7 +323,7 @@ class CivMCPServer:
         # Action tools
         "send_action": ("_send_action", {"action": "required dict with 'kind' field"}),
         "end_turn": ("_end_turn", {"turn": "required int"}),
-        "force_end_turn": ("_force_end_turn", {}),
+        "force_end_turn": ("_force_end_turn", {"turn": "required int"}),
         # Popup choice tools
         "select_pantheon": ("_select_pantheon", {
             "belief_id": "required int - ID of the belief to select",
@@ -451,8 +451,32 @@ class CivMCPServer:
         Use this when end_turn fails due to blockers that cannot be resolved (e.g., stuck UI).
         This directly triggers the game's end-turn control without validation.
         """
+        turn = self._require_param(args, "turn", int)
+        with self._lock:
+            current_turn = self.turn_number
+
+        # Validate that we have a current turn number set
+        if current_turn is None:
+            return {
+                "error": "No active turn - turn_start has not been received yet",
+                "status": "error",
+                "requested_turn": turn,
+                "current_turn": None,
+                "message": "Cannot force end turn: no turn has been started. Wait for turn_start message from DLL."
+            }
+
+        # Validate turn matches current turn
+        if turn != current_turn:
+            return {
+                "error": f"Turn mismatch: requested turn {turn} but current turn is {current_turn}",
+                "status": "error",
+                "requested_turn": turn,
+                "current_turn": current_turn,
+                "message": f"Turn number mismatch. You requested to force end turn {turn}, but the current turn is {current_turn}."
+            }
+
         try:
-            return self._send_pipe_request(request={"type": "force_end_turn"})
+            return self._send_pipe_request(request={"type": "force_end_turn", "turn": turn})
         except ToolError as e:
             return {"status": "error", "error": str(e)}
 

@@ -1404,6 +1404,7 @@ KNOWN_TYPES = {
     "set_city_production",
     "send_action",
     "end_turn",
+    "force_end_turn",
     # Map visualization tools
     "get_visible_tiles",
     "get_map_view",
@@ -1477,6 +1478,7 @@ def filter_tool_calls_from_text(text: str) -> str:
         "get_available_policies(",
         "get_turn_blockers(",
         "get_notifications(",
+        "force_end_turn(",
         # Map visualization tools
         "get_visible_tiles(",
         "get_map_view(",

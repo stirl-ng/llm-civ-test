@@ -174,6 +174,15 @@ def parse_tool_calls(response: str) -> list[dict[str, Any]]:
                     })
                 continue
 
+            if func_name == "force_end_turn":
+                turn_match = re.search(r'turn\s*=\s*(\d+)', args_str)
+                if turn_match:
+                    tool_calls.append({
+                        "tool": "force_end_turn",
+                        "arguments": {"turn": int(turn_match.group(1))}
+                    })
+                continue
+
             # Handle mcp_call
             if func_name == "mcp_call":
                 # Extract tool name
@@ -213,6 +222,13 @@ def parse_tool_calls(response: str) -> list[dict[str, Any]]:
                             "tool": "end_turn",
                             "arguments": {"turn": turn}
                         })
+                elif tool_name == "force_end_turn":
+                    turn = parsed_args.get("turn")
+                    if turn is not None:
+                        tool_calls.append({
+                            "tool": "force_end_turn",
+                            "arguments": {"turn": turn}
+                        })
                 else:
                     # Regular mcp_call - pass through the tool name and arguments
                     tool_calls.append({
@@ -247,6 +263,11 @@ def execute_tool(tool_call: dict[str, Any], tool_registry: dict[str, Any], base_
         result["_end_turn"] = True
         return result
 
+    if name == "force_end_turn":
+        result = call_tool(base_url, "force_end_turn", {"turn": args.get("turn", turn)})
+        result["_end_turn"] = True
+        return result
+
     # Look up tool in registry
     tool = tool_registry.get(name)
     if not tool:
@@ -259,6 +280,9 @@ def execute_tool(tool_call: dict[str, Any], tool_registry: dict[str, Any], base_
     if name == "mcp_call" and args.get("tool") == "end_turn":
         result["_end_turn"] = True
     
+    if name == "mcp_call" and args.get("tool") == "force_end_turn":
+        result["_end_turn"] = True
+        
     return result
 
 

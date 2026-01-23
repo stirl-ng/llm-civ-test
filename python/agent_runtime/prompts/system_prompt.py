@@ -169,6 +169,7 @@ def build_system_prompt(tools: List[Any]) -> str:
     parts.append("    - ENDTURN_BLOCKING_POLICY: Adopt a policy with adopt_policy")
     parts.append("    - ENDTURN_BLOCKING_UNITS: Use unit_alert (auto-wake) for most units!")
     parts.append("  - You can also call get_turn_blockers proactively to check before end_turn")
+    parts.append("- `force_end_turn(turn=N)` - End turn while skipping certain checks such as blocking units.")
     parts.append("")
 
     # Knowledge base usage examples
@@ -261,7 +262,7 @@ def build_system_prompt(tools: List[Any]) -> str:
     parts.append("")
     parts.append("- **Blockers**: If end_turn fails, the error will tell you what's blocking. Use get_turn_blockers to check")
     parts.append("  for blockers proactively, or wait for end_turn to report them. Do not repeatedly try end_turn hoping it will work.")
-    parts.append("  If end_turn fails with ENDTURN_BLOCKING_UNITS, consider using get_units to find the unit and then use send_action to order it")
+    parts.append("  If end_turn fails with ENDTURN_BLOCKING_UNITS, consider using get_units to find the unit and then use send_action or use force_end_turn to end the turn anyway")
     parts.append("")
     parts.append("- **Mid-turn blockers**: Actions can create new blockers (e.g., city production finishing). Use get_turn_blockers to check")
     parts.append("")
