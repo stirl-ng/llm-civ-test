@@ -1063,7 +1063,19 @@ TEMPLATE = """
             const result = tool.result || {};
 
             document.getElementById('modalArguments').textContent = JSON.stringify(args, null, 2);
-            document.getElementById('modalResult').textContent = JSON.stringify(result, null, 2);
+
+            // Special handling for map results - display the ASCII map directly
+            if (result.map && typeof result.map === 'string') {
+                // Show map as pre-formatted text, then other fields as JSON
+                const { map, ...otherFields } = result;
+                let displayText = '=== ASCII Map ===\n\n' + map + '\n\n';
+                if (Object.keys(otherFields).length > 0) {
+                    displayText += '=== Other Data ===\n\n' + JSON.stringify(otherFields, null, 2);
+                }
+                document.getElementById('modalResult').textContent = displayText;
+            } else {
+                document.getElementById('modalResult').textContent = JSON.stringify(result, null, 2);
+            }
 
             document.getElementById('toolModal').classList.add('visible');
         }
@@ -1823,9 +1835,11 @@ def parse_logs(debug_mode: bool = False, verbose_mode: bool = False, game_id: in
                     map_height = result.get("map_height", 0)
                     result_summary = f"{len(tiles)} tiles ({map_width}×{map_height} map)"
                 elif tool_name == "get_map_view":
-                    map_data = result.get("map", "")
-                    lines = map_data.count('\n') if map_data else 0
-                    result_summary = f"ASCII map rendered ({lines} lines)"
+                    center = result.get("center")
+                    num_tiles = result.get("num_tiles", 0)
+                    num_units = result.get("num_units", 0)
+                    center_str = f"({center[0]},{center[1]})" if center else "?"
+                    result_summary = f"Map @ {center_str}: {num_tiles} tiles, {num_units} units"
                 elif tool_name == "get_unit_build_options":
                     tiles = result.get("tiles", [])
                     total_builds = sum(len(t.get("available_builds", [])) for t in tiles)

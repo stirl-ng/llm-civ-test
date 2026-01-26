@@ -761,6 +761,10 @@ class CivMCPServer:
         cities_response = self._send_pipe_request("get_cities")
         cities = cities_response.get("cities", []) if cities_response.get("success", True) else []
 
+        # Mark all cities as ours (get_cities only returns player's own cities)
+        for city in cities:
+            city["is_ours"] = True
+
         # Parse center parameter
         center = None
         center_name = None
