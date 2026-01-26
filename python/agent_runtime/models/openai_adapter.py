@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, List, Optional
 
-from .base import ModelAdapter
+from .base import ModelAdapter, GenerateResponse, ToolCall
 
 # Try to import message logger (may not be available if orchestrator not running)
 _message_logger = None
@@ -16,12 +17,13 @@ except ImportError:
 
 class OpenAIChat(ModelAdapter):
     """
-    OpenAI-compatible chat model adapter (supports OpenAI and compatible servers
-    via base_url, e.g., Azure, local vLLM/Ollama with OpenAI API shim).
+    OpenAI-compatible chat model adapter with native tool calling support.
+
+    Supports OpenAI and compatible servers via base_url (Azure, vLLM, Ollama, etc.)
 
     Config keys (via constructor or env):
     - model: required (env OPENAI_MODEL)
-    - api_key: optional if server doesn’t require (env OPENAI_API_KEY)
+    - api_key: optional if server doesn't require (env OPENAI_API_KEY)
     - base_url: override API host (env OPENAI_BASE_URL)
     """
 
@@ -50,7 +52,23 @@ class OpenAIChat(ModelAdapter):
         host = self._base_url or "openai"
         return f"openai:{self._model}@{host}"
 
-    def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any
+    ) -> GenerateResponse:
+        """Generate response with optional native tool calling.
+
+        Args:
+            messages: Chat messages. For tool results, use format:
+                {"role": "tool", "tool_call_id": "...", "content": "..."}
+            tools: Optional tool definitions in OpenAI format
+            **kwargs: temperature, etc.
+
+        Returns:
+            GenerateResponse with text and/or tool_calls
+        """
         temperature = kwargs.get("temperature", 0.2)
 
         # Log LLM request
@@ -61,17 +79,44 @@ class OpenAIChat(ModelAdapter):
                     model=self._model,
                     messages=messages,
                     temperature=temperature,
+                    tools=[t["function"]["name"] for t in tools] if tools else None,
                 )
             except Exception:
                 pass  # Don't fail if logging fails
 
-        res = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            temperature=temperature,
-        )
+        # Build API call kwargs
+        api_kwargs: Dict[str, Any] = {
+            "model": self._model,
+            "messages": self._convert_messages(messages),
+            "temperature": temperature,
+        }
+
+        # Add tools if provided
+        if tools:
+            api_kwargs["tools"] = tools
+            # Allow model to choose whether to call tools or respond with text
+            api_kwargs["tool_choice"] = "auto"
+
+        # Make API call
+        res = self._client.chat.completions.create(**api_kwargs)
         msg = res.choices[0].message
-        response_text = (msg.content or "").strip()
+
+        # Extract text content
+        text = (msg.content or "").strip()
+
+        # Extract tool calls
+        tool_calls: List[ToolCall] = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args,
+                ))
 
         # Extract token usage
         usage = {}
@@ -87,11 +132,44 @@ class OpenAIChat(ModelAdapter):
             try:
                 _message_logger.log_llm_response(
                     request_uuid=request_uuid,
-                    response=response_text,
+                    response=text,
+                    tool_calls=[{"name": tc.name, "arguments": tc.arguments} for tc in tool_calls],
                     **usage,
                 )
             except Exception:
                 pass  # Don't fail if logging fails
 
-        return response_text
+        return GenerateResponse(
+            text=text,
+            tool_calls=tool_calls,
+            raw_response=res,
+            usage=usage,
+        )
 
+    def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert messages to OpenAI format, handling tool results."""
+        converted = []
+        for msg in messages:
+            role = msg.get("role", "user")
+
+            # Handle tool results
+            if role == "tool":
+                converted.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", ""),
+                    "content": msg.get("content", ""),
+                })
+            # Handle assistant messages that may contain tool calls
+            elif role == "assistant" and msg.get("tool_calls"):
+                converted.append({
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "tool_calls": msg["tool_calls"],
+                })
+            else:
+                converted.append({
+                    "role": role,
+                    "content": msg.get("content", ""),
+                })
+
+        return converted
