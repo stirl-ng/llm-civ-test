@@ -79,19 +79,56 @@ def get_status(base_url: str) -> dict[str, Any] | None:
 
 # --- Tool Execution ---
 
-def execute_tool(tool_call: ToolCall, base_url: str, turn: int) -> dict[str, Any]:
-    """Execute a single tool call via orchestrator HTTP API.
+def execute_tool(tool_call: ToolCall, base_url: str, turn: int, game_id: int | None = None) -> dict[str, Any]:
+    """Execute a single tool call via orchestrator HTTP API or locally.
+
+    Tools like record_lesson and get_lessons are handled locally since
+    the journal lives in this Python process, not in the orchestrator.
 
     Args:
         tool_call: ToolCall object from model response
         base_url: Orchestrator base URL
         turn: Current turn number
+        game_id: Current game ID (needed for local journal tools)
 
     Returns:
         Tool result dict with 'ok' field and optional '_end_turn' flag
     """
     name = tool_call.name
     args = tool_call.arguments
+
+    # Handle journal tools locally (journal lives in this process)
+    if name == "record_lesson":
+        try:
+            journal = get_journal()
+            journal.record_lesson(
+                content=args.get("lesson", ""),
+                game_id=game_id or 0,
+                turn=turn,
+                category=args.get("category", "general"),
+            )
+            result = {"ok": True, "message": "Lesson recorded."}
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        return result
+
+    if name == "get_lessons":
+        try:
+            journal = get_journal()
+            lessons = journal.get_lessons(
+                category=args.get("category"),
+                limit=args.get("limit", 10),
+            )
+            result = {
+                "ok": True,
+                "lessons": [
+                    {"content": l.content, "category": l.category, "game_id": l.source_game_id}
+                    for l in lessons
+                ],
+            }
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        return result
 
     # Execute via orchestrator
     try:
@@ -144,6 +181,20 @@ def build_tool_result_message(tool_call: ToolCall, result: dict[str, Any]) -> di
 
 # --- Core Turn Loop ---
 
+def prompt_operator(turn: int, iteration: int = 0) -> str | None:
+    """Prompt the human operator for optional input.
+
+    Returns the operator's message, or None if they just pressed Enter.
+    This also serves as a natural pause point for watching the game.
+    """
+    try:
+        label = f"  [Turn {turn}]" if iteration == 0 else f"  [Turn {turn}.{iteration}]"
+        user_input = input(f"{label} Operator (Enter to continue): ").strip()
+        return user_input if user_input else None
+    except EOFError:
+        return None
+
+
 def run_turn(
     model,
     base_url: str,
@@ -151,7 +202,8 @@ def run_turn(
     game_id: int | None = None,
     player_name: str | None = None,
     civ_name: str | None = None,
-    timeout: float | None = None
+    timeout: float | None = None,
+    interactive: bool = True,
 ) -> dict[str, Any]:
     """Run a single turn: LLM → execute tools → repeat until end_turn.
 
@@ -163,6 +215,7 @@ def run_turn(
         player_name: Leader name
         civ_name: Civilization name
         timeout: Optional timeout in seconds. None means no timeout.
+        interactive: Whether to pause for human operator input between iterations.
 
     Returns:
         Dict with turn results
@@ -172,13 +225,19 @@ def run_turn(
     # Get tool schemas
     tools = get_openai_tools()
 
+    # Prompt operator at turn start (also serves as pause)
+    operator_msg = None
+    if interactive:
+        operator_msg = prompt_operator(turn)
+
     # Build initial messages with narrative context
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(interactive=interactive)
     briefing = generate_turn_briefing(
         turn_number=turn,
         game_id=game_id,
         player_name=player_name,
         civ_name=civ_name,
+        user_message=operator_msg,
     )
 
     messages: list[dict[str, Any]] = [
@@ -231,12 +290,18 @@ def run_turn(
             messages.append({"role": "user", "content": "Please call a tool or end_turn when ready."})
             continue
 
+        # Operator pause between iterations (after seeing what LLM wants to do)
+        if interactive and iterations > 1:
+            mid_turn_msg = prompt_operator(turn, iterations)
+            if mid_turn_msg:
+                messages.append({"role": "user", "content": f"**[Operator]:** {mid_turn_msg}"})
+
         # Execute each tool call
         for tool_call in response.tool_calls:
             tool_calls_total += 1
 
             try:
-                result = execute_tool(tool_call, base_url, turn)
+                result = execute_tool(tool_call, base_url, turn, game_id=game_id)
                 is_ok = result.get("ok", True)
                 print(f"    {'✓' if is_ok else '✗'} {tool_call.name}")
 
@@ -284,7 +349,7 @@ def run_turn(
     return {"turn": turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
 
 
-def run_game_loop(model, base_url: str, poll_interval: float = 2.0, turn_timeout: float | None = None):
+def run_game_loop(model, base_url: str, poll_interval: float = 2.0, turn_timeout: float | None = None, interactive: bool = False):
     """Main loop: poll for turns, run each turn.
 
     Args:
@@ -292,6 +357,7 @@ def run_game_loop(model, base_url: str, poll_interval: float = 2.0, turn_timeout
         base_url: Orchestrator base URL
         poll_interval: Seconds between status polls
         turn_timeout: Optional timeout per turn in seconds
+        interactive: Whether to pause for human operator input between iterations
     """
     last_turn = None
     last_game_id = None
@@ -342,6 +408,7 @@ def run_game_loop(model, base_url: str, poll_interval: float = 2.0, turn_timeout
                 game_id=current_game_id,
                 player_name=player_name,
                 timeout=turn_timeout,
+                interactive=interactive,
             )
 
             print(f"\nSummary: {result['iterations']} iterations, {result['tool_calls']} tool calls")
@@ -356,6 +423,7 @@ def run_game_loop(model, base_url: str, poll_interval: float = 2.0, turn_timeout
 def main():
     parser = argparse.ArgumentParser(description="Run Civ V LLM experiment")
     parser.add_argument("--config", required=True, help="Config file or short name (e.g., 'gemini')")
+    parser.add_argument("--interactive", action="store_true", help="Enable operator input")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -376,6 +444,9 @@ def main():
 
     poll_interval = cfg.get("orchestrator", {}).get("poll_interval", 2.0)
     turn_timeout = cfg.get("orchestrator", {}).get("turn_timeout", None)
+    interactive = cfg.get("orchestrator", {}).get("interactive", False)
+    if args.interactive:
+        interactive = True
 
     # Wait for orchestrator
     print(f"Connecting to {base_url}", end="", flush=True)
@@ -384,7 +455,8 @@ def main():
         time.sleep(1)
     print("  Connected!")
 
-    run_game_loop(model, base_url, poll_interval, turn_timeout)
+    print(f"Interactive: {interactive}")
+    run_game_loop(model, base_url, poll_interval, turn_timeout, interactive)
 
 
 if __name__ == "__main__":
