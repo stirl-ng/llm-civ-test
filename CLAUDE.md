@@ -10,12 +10,12 @@ This document establishes patterns and conventions for the LLM pipe integration 
 - **Humans** can look at their cities anytime and see what's available to build
 - **LLM** should be able to call `get_city_production` anytime to see the same info
 - **Humans** can open the tech tree and see what's researchable
-- **LLM** should be able to call `get_available_techs` (or similar) anytime
+- **LLM** should be able to call `get_available_techs` anytime
 
 ### Popups are UI conveniences, not data sources:
 - Popups prompt humans to make decisions, but humans don't NEED them
 - The LLM should proactively query state and take actions, not wait for `popup_choice_needed` events
-- Popup hooks (`choose_tech`, `choose_production`) are fallbacks, not the primary flow
+- Popup hooks are fallbacks, not the primary flow
 
 ### Implementation pattern:
 1. **Query tools** (`get_city_production`, `get_available_techs`) - LLM asks for info when needed
@@ -37,51 +37,32 @@ A common issue with LLM gameplay is units moving without purpose:
 
 ### What this means:
 - **Humans** look at the map, identify objectives, then move units toward those objectives
-- **LLM** should query map state first (`get_map_view`, `get_reachable_tiles`, etc.), identify objectives, THEN move
-- **Humans** use multi-turn auto-pathing - click a distant tile and let the unit follow the path over multiple turns
-- **LLM** should do the same - `move_unit` to distant tiles, trust the game's pathfinding, don't re-command every turn
+- **LLM** should query map state first (`get_map_view`, `get_reachable_tiles`), identify objectives, THEN move
+- **Humans** use multi-turn auto-pathing - click a distant tile and let the unit follow the path
+- **LLM** should do the same - `move_unit` to distant tiles, trust the game's pathfinding
 
 ### Movement Best Practices:
 
 **GOOD - Specific destination with clear purpose:**
-```json
+```
 move_unit(unit_id=5, to=[23, 18])  // Move worker to wheat tile to build farm
-move_unit(unit_id=8, to=[40, 25])  // Move scout to unexplored region identified in map_view
-move_unit(unit_id=3, to=[15, 30])  // Move settler to high-value founding site from get_city_founding_sites
+move_unit(unit_id=8, to=[40, 25])  // Move scout to unexplored region
 ```
 
 **BAD - Vague or random movement:**
-```json
-move_unit(unit_id=5, to=[11, 13])  // Move worker "northeast" - why? what's there?
-move_unit(unit_id=8, to=[12, 12])  // Move scout one tile - retreading explored ground
+```
+move_unit(unit_id=5, to=[11, 13])  // Move worker "northeast" - why?
+move_unit(unit_id=8, to=[12, 12])  // Move scout one tile - retreading ground
 ```
 
-### Multi-Turn Auto-Pathing (Already Works!)
-The `move_unit` command already supports multi-turn movement:
+### Multi-Turn Auto-Pathing
+The `move_unit` command supports multi-turn movement:
 - Game calculates full A* path to destination
 - Path is cached and auto-continues on subsequent turns
 - LLM doesn't need to re-issue commands every turn
 - Unit automatically follows path until destination reached
 
-**Workflow:**
-1. Query state: `get_map_view(center="unit:5", radius=15)` to identify objectives
-2. Choose objective: "Unexplored fog-of-war region at (40, 25)"
-3. Move to objective: `move_unit(unit_id=5, to=[40, 25])`
-4. Wait: Unit auto-follows path over next 5-8 turns
-5. Unit arrives: Now query state again and choose next objective
-
-**Don't micro-manage!** If a unit is already moving toward an objective (activity="MISSION"), let it complete the journey unless circumstances change (enemy spotted, new priority).
-
-### Unit-Specific Movement Strategies:
-
-| Unit Type | Movement Strategy | Query Tools to Use |
-|-----------|-------------------|-------------------|
-| Scout | Move to fog-of-war boundaries to explore | `get_map_view` (identify unexplored regions) |
-| Settler | Move to high-value founding sites | `get_city_founding_sites` |
-| Worker | Move to tiles needing improvements | `get_builder_ai_tasks`, `get_unit_build_options` |
-| Military | Move to defensive positions or attack targets | `get_reachable_tiles`, `get_map_view` (enemy units) |
-
-See `docs/unit-tile-interactions.md` for detailed movement best practices and query tool specifications.
+**Don't micro-manage!** If a unit is already moving toward an objective (activity="MISSION"), let it complete the journey unless circumstances change.
 
 ## Known Issues (TODO)
 
@@ -95,14 +76,20 @@ These popups block `end_turn` but aren't reported via pipe:
 Need to add auto-close handlers in Lua for these.
 
 ### 2. NO_ENDTURN_BLOCKING_TYPE gives no info
-When `blocking_type_id` is -1, we get no diagnostic info about what's blocking. Need to investigate what causes this state.
+When `blocking_type_id` is -1, we get no diagnostic info about what's blocking.
 
 ## Architecture Overview
 
 The LLM integration uses a named pipe (`\\.\pipe\civv_llm`) for bidirectional communication:
 - **C++ (DLL)**: Handles pipe connection, sends game events, processes commands
-- **Lua (UI)**: Auto-closes popups, sends choice options to pipe (for now)
+- **Lua (UI)**: Auto-closes popups, sends choice options to pipe
 - **Python (Orchestrator)**: MCP server that bridges the game to LLM tools
+
+## Tools
+
+**The code is the documentation.** Call `get_tools` to see all available tools with descriptions.
+
+Source of truth: `python/orchestrator/mcp_server.py` - the `_TOOLS` dict defines all implemented tools, and handler docstrings provide descriptions.
 
 ## Key Convention: Prefer C++ for Pipe Messaging
 
@@ -126,16 +113,14 @@ The LLM integration uses a named pipe (`\\.\pipe\civv_llm`) for bidirectional co
 ## Popup Patterns
 
 ### 1. Informational Popups (No Choices)
-Examples: NewEraPopup, NaturalWonderPopup, TechAwardPopup, LoadScreen (Dawn of Man)
+Examples: NewEraPopup, NaturalWonderPopup, TechAwardPopup, LoadScreen
 
 **Pattern**: Timer-based auto-close in Lua, any info sent from C++
 
 ```lua
--- Standard timer variables
 local g_autoCloseTimer = 0
-local AUTO_CLOSE_SECONDS = 2.0  -- Use this name consistently!
+local AUTO_CLOSE_SECONDS = 2.0
 
--- In SetUpdate handler
 ContextPtr:SetUpdate(function(fDTime)
     if not ContextPtr:IsHidden() then
         g_autoCloseTimer = g_autoCloseTimer + fDTime
@@ -145,9 +130,6 @@ ContextPtr:SetUpdate(function(fDTime)
         end
     end
 end)
-
--- Reset timer when popup opens
-g_autoCloseTimer = 0
 ```
 
 ### 2. Choice Popups (Requires Selection)
@@ -156,29 +138,28 @@ Examples: TechPopup, ProductionPopup, ChooseReligionPopup, ChoosePantheonPopup
 **Pattern**: State-based auto-close in Lua, sends options via pipe
 
 ```lua
--- Track initial state when popup opens
 local g_initialState = nil
 
 -- On popup open
 g_initialState = GetCurrentState()
-SendChoicesToPipe()  -- Lua sends available options
+SendChoicesToPipe()
 
 -- In SetUpdate handler - close when state changes
 ContextPtr:SetUpdate(function(fDTime)
     if not ContextPtr:IsHidden() then
-        local currentState = GetCurrentState()
-        if currentState ~= g_initialState then
+        if GetCurrentState() ~= g_initialState then
             ClosePopup()
         end
     end
 end)
 ```
 
-## C++ Pipe Functions (CvGame.cpp)
+## Adding New Pipe Commands
 
-### Sending Messages
+### C++ Side (CvGame.cpp)
+
+Sending messages:
 ```cpp
-// Use existing pattern in CvGame.cpp
 void CvGame::SendXxxToPipe()
 {
     if (!m_kGameStatePipe.IsRunning())
@@ -188,223 +169,53 @@ void CvGame::SendXxxToPipe()
     payload << "{\"type\":\"xxx\"";
     payload << ",\"game_id\":" << CvPreGame::mapRandomSeed();
     payload << ",\"session_id\":" << m_kGameStatePipe.GetSessionId();
-    // ... add fields
     payload << "}";
 
     m_kGameStatePipe.SendMessage(payload.str());
 }
 ```
 
-### Handling Commands
-Commands are handled in `CvGame::HandlePipeCommand()`. Add new command handlers there:
+Handling commands in `HandlePipeCommand()`:
 ```cpp
 else if (msgType == "your_command")
 {
-    // Parse parameters with PipeJson::GetInt(), PipeJson::GetString()
+    // Parse with PipeJson::GetInt(), PipeJson::GetString()
     // Execute game action
     // Send response via SendRawMessageToPipe()
 }
 ```
 
-## MCP Tools (mcp_server.py)
+### Python Side (mcp_server.py)
 
-When adding new tools:
-1. Add tool definition to `TOOL_DEFINITIONS` dict
-2. Implement handler method `_your_tool()`
-3. Handler sends command to pipe, waits for response
+Add to `_TOOLS` dict and implement handler:
+```python
+_TOOLS = {
+    "your_tool": ("_your_tool", {"param": "required int"}),
+}
+
+def _your_tool(self, args: dict) -> dict:
+    """One-line description shown to LLM."""
+    param = self._require_param(args, "param", int)
+    return self._send_pipe_request("your_command", param=param)
+```
 
 ## File Locations
 
 - **C++ Pipe Logic**: `CvGameCoreDLL_Expansion2/GameStatePipe.cpp`, `CvGame.cpp`
-- **Lua Popups**: `(1) Community Patch/LUA/`, `(1) Community Patch/Core Files/Overrides/`
+- **Lua Popups**: `(1) Community Patch/LUA/`
 - **MCP Server**: `python/orchestrator/mcp_server.py`
-
-## Current Known Duplication
-
-The following Lua files have duplicated `JsonEncode()`/`JsonEncodeArray()` helpers:
-- TechPopup.lua
-- ProductionPopup.lua
-- ChooseReligionPopup.lua
-- ChoosePantheonPopup.lua
-- DeclareWarPopup.lua (city capture popup)
-
-This is accepted technical debt. Future improvement: create shared include or move to C++.
 
 ## Naming Conventions
 
-- Timer constants: `AUTO_CLOSE_SECONDS` (not `AUTO_CLOSE_DELAY`)
+- Timer constants: `AUTO_CLOSE_SECONDS`
 - Timer variables: `g_autoCloseTimer`
-- Initial state tracking: `g_initialXxx` (e.g., `g_initialResearch`, `g_initialProductionItem`)
+- Initial state tracking: `g_initialXxx`
 
----
+## Documentation
 
-## Documentation References
-
-### Primary Documentation (`./docs/`)
-
-| Document | Purpose | Key Content |
-|----------|---------|-------------|
-| **[protocol.md](docs/protocol.md)** | Protocol specification | Message format, architecture diagrams, session tracking |
-| **[api.yaml](docs/api.yaml)** | Full API specification | All commands, events, popup hooks with parameters |
-| **[state-schema.md](docs/state-schema.md)** | Game state reference | 20 categories of queryable state (cities, units, diplomacy, etc.) |
-| **[orchestrator.md](docs/orchestrator.md)** | Python orchestrator | CLI options, HTTP endpoints, turn flow |
-| **[getting-started.md](docs/getting-started.md)** | Quick start guide | Setup, curl examples, troubleshooting |
-| **[unit-actions.md](docs/unit-actions.md)** | Unit action guide | move_unit, unit_found_city, unit_sleep, unit_skip |
-| **[logging.md](docs/logging.md)** | Logging architecture | Message parity between DLL, LLM, and UI |
-| **[map-visualization.md](docs/map-visualization.md)** | ASCII map rendering | Spatial visualization for LLM, MCP tool spec |
-
-### Key Protocol Details (from `docs/protocol.md`)
-
-- **Pipe name**: `\\.\pipe\civv_llm`
-- **Session tracking**: `game_id` (map seed, persists across saves) + `session_id` (per connection)
-- **Message types**: `turn_start`, `turn_complete`, `notification`, `popup_choice_needed`, `heartbeat`
-- **Command flow**: LLM → HTTP → Orchestrator → Pipe → DLL → Response → LLM
-
-### API Reference (from `docs/api.yaml`)
-
-**Core Commands:**
-- `research` - Set research target (`tech` parameter)
-- `set_production` - Set city production (`city_id`, `item_type`, `item_id`)
-- `move_unit` - Move unit to coordinates (`unit_id`, `to: [x, y]`)
-- `unit_found_city` - Found city with settler (`unit_id`)
-- `end_turn` - End current turn (requires `turn` parameter for validation)
-
-**Popup Hooks:**
-- `choose_tech` - Technology selection popup (TechPopup.lua)
-- `choose_production` - City production popup (ProductionPopup.lua)
-- `choose_pantheon` - Pantheon belief selection (ChoosePantheonPopup.lua)
-- `choose_religion` - Religion founding/enhancing (ChooseReligionPopup.lua)
-- `city_captured` - Annex/puppet/raze decision (DeclareWarPopup.lua)
-
----
-
-## Key C++ Files and Methods
-
-### GameStatePipe.cpp
-**Purpose**: Manages the named pipe connection and message routing
-
-| Method | Description |
-|--------|-------------|
-| `Start()` | Creates named pipe, starts worker thread |
-| `SendMessage()` | Queue message for sending to orchestrator |
-| `GetSessionId()` | Returns current session ID |
-| `IsRunning()` | Check if pipe is connected |
-
-### CvGame.cpp - Pipe Integration Methods
-**Purpose**: High-level game state and event messaging
-
-| Method | Description |
-|--------|-------------|
-| `SendTurnStartToPipe()` | Sends full game state at turn start |
-| `SendTurnCompleteToPipe()` | Signals turn end |
-| `SendGameStartInfoToPipe()` | Sends civilization/leader info (Dawn of Man) |
-| `SendHeartbeatToPipe()` | Periodic connection check |
-| `HandlePipeCommand()` | Routes incoming commands to handlers |
-
-### CvGame.cpp - Command Handlers (in `HandlePipeCommand`)
-Commands are routed by `type` field:
-
-| Command Type | Handler Logic |
-|--------------|---------------|
-| `research` | `GET_TEAM().SetResearch()` |
-| `set_production` | `pCity->pushOrder()` |
-| `move_unit` | `pUnit->PushMission()` |
-| `unit_found_city` | `pUnit->PushMission(CvTypes::getMISSION_FOUND())` |
-| `unit_sleep` | `pUnit->PushMission(CvTypes::getMISSION_SLEEP())` |
-| `select_unit` | `CvInterfacePtr->selectUnit()` |
-
-### PipeJson (in CvGame.cpp)
-**Purpose**: JSON serialization utilities
-
-| Function | Description |
-|----------|-------------|
-| `Escape(str)` | Escape string for JSON |
-| `GetString(json, key)` | Extract string field |
-| `GetInt(json, key, default)` | Extract integer field |
-
----
-
-## Key Lua Popup Files
-
-### Auto-Close Popups (Timer-based)
-| File | Location | Popup Type |
-|------|----------|------------|
-| `NewEraPopup.lua` | `(1) Community Patch/LUA/` | New era notification |
-| `NaturalWonderPopup.lua` | `(1) Community Patch/LUA/` | Natural wonder discovered |
-| `TechAwardPopup.lua` | `(1) Community Patch/LUA/` | Free tech from great person |
-| `LoadScreen.lua` | Multiple variants | Dawn of Man (game start) |
-
-### Choice Popups (State-based + Pipe messaging)
-| File | Location | Sends to Pipe |
-|------|----------|---------------|
-| `TechPopup.lua` | `(1) Community Patch/LUA/` | `popup_type: "choose_tech"` |
-| `ProductionPopup.lua` | `(1) Community Patch/LUA/` | `popup_type: "choose_production"` |
-| `ChoosePantheonPopup.lua` | `(1) Community Patch/LUA/` | `popup_type: "choose_pantheon"` |
-| `ChooseReligionPopup.lua` | `(1) Community Patch/LUA/` | `popup_type: "choose_religion"` |
-| `DeclareWarPopup.lua` | `(1) Community Patch/Core Files/Overrides/` | `popup_type: "city_captured"` |
-
----
-
-## Python Orchestrator (`python/orchestrator/`)
-
-### mcp_server.py
-**Purpose**: MCP HTTP server exposing tools to LLM
-
-| Method | Tool Name | Description |
-|--------|-----------|-------------|
-| `_get_game_state()` | `get_game_state` | Query game state by category |
-| `_send_action()` | `send_action` | Send action command to DLL |
-| `_end_turn()` | `end_turn` | End current turn |
-| `_get_units()` | `get_units` | List all player units |
-| `_get_log()` | `get_log` | Query message log history |
-
-### pipe_server.py
-**Purpose**: Named pipe client connection to DLL
-
-| Class/Method | Description |
-|--------------|-------------|
-| `PipeClient` | Async pipe connection manager |
-| `StateProcessor` | Processes incoming DLL messages |
-| `GameLogger` | JSONL message logging |
-
----
-
-## State Categories (from `docs/state-schema.md`)
-
-When using `get_game_state`, these categories are available:
-
-| Category | Key Data |
-|----------|----------|
-| `game_level` | Turn number, era, game speed, map size |
-| `cities` | All cities with population, production, buildings |
-| `units` | All units with position, type, moves remaining |
-| `technologies` | Research progress, available techs, queue |
-| `policies` | Adopted policies, available branches |
-| `diplomacy` | Relations, deals, wars with other civs |
-| `resources` | Strategic/luxury resources, yields |
-| `terrain` | Tile data, improvements, features |
-| `victory` | Victory conditions progress |
-| `religion` | Pantheon, founded religions, beliefs |
-
-See `docs/state-schema.md` for complete field documentation.
-
----
-
-## Documentation Notes
-
-### Duplicate Documentation
-`Community-Patch-DLL/docs/` contains copies of documentation that are also in `./docs/`:
-- `protocol.md` - Same as `docs/protocol.md`
-- `api.yaml` - Same as `docs/api.yaml`
-
-**Use `./docs/` as the canonical source.** The copies in `Community-Patch-DLL/docs/` may become stale.
-
-### Documentation Currency (as of session)
-- **docs/protocol.md** - Current; covers session tracking, message types, architecture
-- **docs/api.yaml** - Current; includes all popup hooks and commands
-- **docs/state-schema.md** - Current; comprehensive 20-category reference
-- **docs/logging.md** - Documents planned improvements, partially implemented
-- **docs/unit-actions.md** - Current; covers move/found/sleep/skip actions
-
-### Potentially Missing Documentation
-- `PuppetCityPopup.lua` handling (may need docs/api.yaml update for puppet city choices)
+- `docs/getting-started.md` - Setup and quickstart
+- `docs/orchestrator.md` - CLI options and HTTP endpoints
+- `docs/protocol.md` - Pipe protocol architecture
+- `docs/state-schema.md` - Game state reference
+- `docs/unit-actions.md` - Unit action examples
+- `docs/llm-agent-design.md` - Agent architecture philosophy
