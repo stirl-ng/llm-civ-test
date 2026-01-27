@@ -12,7 +12,7 @@ from typing import Optional
 from .personality import Personality, build_personality_prompt
 
 
-def build_system_prompt(personality: Optional[Personality] = None) -> str:
+def build_system_prompt(personality: Optional[Personality] = None, interactive: bool = False) -> str:
     """Build system prompt focused on experience over execution.
 
     The prompt establishes:
@@ -97,6 +97,20 @@ def build_system_prompt(personality: Optional[Personality] = None) -> str:
     parts.append("")
     parts.append("Once you found your capital, the game truly begins.")
     parts.append("")
+
+    # Human operator
+    if interactive:
+        parts.append("## The Human Operator")
+        parts.append("")
+        parts.append("A human is watching your game. They may occasionally send you messages,")
+        parts.append("marked as **[Operator]**. These messages have authority:")
+        parts.append("- Direct instructions (\"research Mining\", \"move the scout north\") → follow them")
+        parts.append("- Suggestions (\"consider expanding south\") → weigh them seriously")
+        parts.append("- Style requests (\"speak in Spanish\", \"be more aggressive\") → honor them")
+        parts.append("- Questions (\"why did you do that?\") → answer honestly")
+        parts.append("")
+        parts.append("The operator is a collaborator, not a boss. But when they speak, listen.")
+        parts.append("")
 
     # Closing
     parts.append("## Remember")
