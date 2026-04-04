@@ -1,221 +1,64 @@
 # Claude Code Conventions for LLM-Civ Integration
 
-This document establishes patterns and conventions for the LLM pipe integration in this Civ V mod.
+## Design Principles
 
-## Design Philosophy: LLM as a Player, Not a Popup Responder
+**LLM as Player**: Query game state proactively via tools. Do not wait for popup events — popups are UI artifacts auto-closed by Lua. The LLM should already know what it wants to do before any popup appears.
 
-**Key Principle**: The LLM should have access to the same information as a human player, at the same time, through MCP query tools - NOT by waiting for popup events.
+**Purposeful Movement**: Units move to specific tiles for explicit reasons. Query map state first, identify an objective, then move. `move_unit` supports multi-turn A* pathfinding — give the destination, not the next step. Don't re-issue commands to units already on a mission (`activity="MISSION"`).
 
-### What this means:
-- **Humans** can look at their cities anytime and see what's available to build
-- **LLM** should be able to call `get_city_production` anytime to see the same info
-- **Humans** can open the tech tree and see what's researchable
-- **LLM** should be able to call `get_available_techs` anytime
+**Always push, never poll**: If something changes, send an event. The DLL hooks deeply enough that all state changes can be emitted over the pipe. Nothing in this system should poll for state — the orchestrator reacts to DLL push events, and agents react to orchestrator push events (SSE). Polling is a bug, not a feature.
 
-### Popups are UI conveniences, not data sources:
-- Popups prompt humans to make decisions, but humans don't NEED them
-- The LLM should proactively query state and take actions, not wait for `popup_choice_needed` events
-- Popup hooks are fallbacks, not the primary flow
+## Architecture
 
-### Implementation pattern:
-1. **Query tools** (`get_city_production`, `get_available_techs`) - LLM asks for info when needed
-2. **Action tools** (`set_city_production`, `choose_tech`) - LLM takes action directly
-3. **Popup events** - Optional notifications, auto-closed by Lua, LLM doesn't depend on them
-
-This mimics how a skilled human plays: they already know what they want to build before the popup appears.
-
-## Design Philosophy: Purposeful Movement, Not Random Wandering
-
-**Key Principle**: Units should move to SPECIFIC tiles for CLEAR reasons, not move randomly or "just because."
-
-### The Problem: Random Movement
-A common issue with LLM gameplay is units moving without purpose:
-- Scouts retreading already-explored ground
-- Workers moving randomly instead of to tiles they'll improve
-- Military units wandering aimlessly
-- Units moving "just to do something" each turn
-
-### What this means:
-- **Humans** look at the map, identify objectives, then move units toward those objectives
-- **LLM** should query map state first (`get_map_view`, `get_reachable_tiles`), identify objectives, THEN move
-- **Humans** use multi-turn auto-pathing - click a distant tile and let the unit follow the path
-- **LLM** should do the same - `move_unit` to distant tiles, trust the game's pathfinding
-
-### Movement Best Practices:
-
-**GOOD - Specific destination with clear purpose:**
 ```
-move_unit(unit_id=5, to=[23, 18])  // Move worker to wheat tile to build farm
-move_unit(unit_id=8, to=[40, 25])  // Move scout to unexplored region
+Civ V DLL (C++) ──named pipe──> Orchestrator (Python) ──HTTP :8765──> Agent Runner ──API──> LLM
 ```
 
-**BAD - Vague or random movement:**
-```
-move_unit(unit_id=5, to=[11, 13])  // Move worker "northeast" - why?
-move_unit(unit_id=8, to=[12, 12])  // Move scout one tile - retreading ground
-```
-
-### Multi-Turn Auto-Pathing
-The `move_unit` command supports multi-turn movement:
-- Game calculates full A* path to destination
-- Path is cached and auto-continues on subsequent turns
-- LLM doesn't need to re-issue commands every turn
-- Unit automatically follows path until destination reached
-
-**Don't micro-manage!** If a unit is already moving toward an objective (activity="MISSION"), let it complete the journey unless circumstances change.
-
-## Known Issues (TODO)
-
-### 1. Unhandled popups block end_turn
-These popups block `end_turn` but aren't reported via pipe:
-- Meet civilization dialog
-- Goody hut rewards
-- Natural wonder discovered
-- Policy screen (when open in UI)
-
-Need to add auto-close handlers in Lua for these.
-
-### 2. NO_ENDTURN_BLOCKING_TYPE gives no info
-When `blocking_type_id` is -1, we get no diagnostic info about what's blocking.
-
-## Architecture Overview
-
-The LLM integration uses a named pipe (`\\.\pipe\civv_llm`) for bidirectional communication:
-- **C++ (DLL)**: Handles pipe connection, sends game events, processes commands
-- **Lua (UI)**: Auto-closes popups, sends choice options to pipe
-- **Python (Orchestrator)**: MCP server that bridges the game to LLM tools
-
-## Tools
-
-**The code is the documentation.** Call `get_tools` to see all available tools with descriptions.
-
-Source of truth: `python/orchestrator/mcp_server.py` - the `_TOOLS` dict defines all implemented tools, and handler docstrings provide descriptions.
-
-## Key Convention: Prefer C++ for Pipe Messaging
-
-**IMPORTANT**: When adding new pipe messaging, prefer implementing in C++ rather than Lua.
-
-### Why C++ over Lua:
-1. **Single implementation** - C++ code exists once, Lua popups often have 4+ variants
-2. **No JSON helper duplication** - C++ has `PipeJson::Escape()` already
-3. **Centralized logic** - All pipe handling in `CvGame.cpp` and `GameStatePipe.cpp`
-4. **Type safety** - C++ catches errors at compile time
-
-### When Lua pipe messaging is acceptable:
-- Choice popups where Lua knows the available options (TechPopup, ProductionPopup, etc.)
-- These still use `Game.SendPipeMessage(json)` which routes through C++
-
-### When to use C++ pipe messaging:
-- Informational popups (game start, new era, etc.) - just auto-close in Lua
-- Game events (turn start, turn complete, notifications)
-- Command responses (tech selected, production set, etc.)
-
-## Popup Patterns
-
-### 1. Informational Popups (No Choices)
-Examples: NewEraPopup, NaturalWonderPopup, TechAwardPopup, LoadScreen
-
-**Pattern**: Timer-based auto-close in Lua, any info sent from C++
-
-```lua
-local g_autoCloseTimer = 0
-local AUTO_CLOSE_SECONDS = 2.0
-
-ContextPtr:SetUpdate(function(fDTime)
-    if not ContextPtr:IsHidden() then
-        g_autoCloseTimer = g_autoCloseTimer + fDTime
-        if g_autoCloseTimer >= AUTO_CLOSE_SECONDS then
-            g_autoCloseTimer = 0
-            OnClose()
-        end
-    end
-end)
-```
-
-### 2. Choice Popups (Requires Selection)
-Examples: TechPopup, ProductionPopup, ChooseReligionPopup, ChoosePantheonPopup
-
-**Pattern**: State-based auto-close in Lua, sends options via pipe
-
-```lua
-local g_initialState = nil
-
--- On popup open
-g_initialState = GetCurrentState()
-SendChoicesToPipe()
-
--- In SetUpdate handler - close when state changes
-ContextPtr:SetUpdate(function(fDTime)
-    if not ContextPtr:IsHidden() then
-        if GetCurrentState() ~= g_initialState then
-            ClosePopup()
-        end
-    end
-end)
-```
-
-## Adding New Pipe Commands
-
-### C++ Side (CvGame.cpp)
-
-Sending messages:
-```cpp
-void CvGame::SendXxxToPipe()
-{
-    if (!m_kGameStatePipe.IsRunning())
-        return;
-
-    std::ostringstream payload;
-    payload << "{\"type\":\"xxx\"";
-    payload << ",\"game_id\":" << CvPreGame::mapRandomSeed();
-    payload << ",\"session_id\":" << m_kGameStatePipe.GetSessionId();
-    payload << "}";
-
-    m_kGameStatePipe.SendMessage(payload.str());
-}
-```
-
-Handling commands in `HandlePipeCommand()`:
-```cpp
-else if (msgType == "your_command")
-{
-    // Parse with PipeJson::GetInt(), PipeJson::GetString()
-    // Execute game action
-    // Send response via SendRawMessageToPipe()
-}
-```
-
-### Python Side (mcp_server.py)
-
-Add to `_TOOLS` dict and implement handler:
-```python
-_TOOLS = {
-    "your_tool": ("_your_tool", {"param": "required int"}),
-}
-
-def _your_tool(self, args: dict) -> dict:
-    """One-line description shown to LLM."""
-    param = self._require_param(args, "param", int)
-    return self._send_pipe_request("your_command", param=param)
-```
+- **DLL**: Sends game events, handles commands. `GameStatePipe.cpp` owns the pipe; `CvGame.cpp` owns command handling and `HandlePipeCommand()`.
+- **Orchestrator**: Named pipe client + MCP HTTP server. Exposes game tools at `localhost:8765`.
+- **Agent Runner**: Subscribes to orchestrator SSE stream (target; currently polls `/status`), receives `turn_start` for its `player_id`, sends system prompt + briefing to LLM, executes tool calls until `end_turn` succeeds. Entry: `python/experiments/run.py`.
+- **Journal tools** (`record_lesson`, `get_recaps`, etc.) are handled locally inside the agent runner process, not routed through the orchestrator.
+- **Multi-agent**: Multiple runners connect simultaneously, each scoped to a `player_id`. Hotseat (sequential turns) works today; simultaneous multiplayer requires concurrent per-player event streams and live fog-of-war event routing.
 
 ## File Locations
 
-- **C++ Pipe Logic**: `CvGameCoreDLL_Expansion2/GameStatePipe.cpp`, `CvGame.cpp`
-- **Lua Popups**: `(1) Community Patch/LUA/`
-- **MCP Server**: `python/orchestrator/mcp_server.py`
+| Component | Path |
+|---|---|
+| C++ pipe logic | `CvGameCoreDLL_Expansion2/GameStatePipe.cpp`, `CvGame.cpp` |
+| Lua popup handlers | `(1) Community Patch/LUA/` |
+| Orchestrator | `python/orchestrator/` |
+| Tool definitions | `python/orchestrator/mcp_server.py` (`_TOOLS` dict) |
+| Tool schemas (LLM-facing) | `python/agent_runtime/tools/schemas.py` |
+| Agent turn loop | `python/experiments/run.py` |
+| System prompt | `python/agent_runtime/prompts/system_prompt.py` |
+| Turn briefing | `python/agent_runtime/briefing.py` |
+| Memory / journal | `python/agent_runtime/memory/journal.py` |
+| Model adapters | `python/agent_runtime/models/` |
+| Experiment configs | `python/configs/experiments/` (YAML) |
 
-## Naming Conventions
+## Key Conventions
 
-- Timer constants: `AUTO_CLOSE_SECONDS`
-- Timer variables: `g_autoCloseTimer`
-- Initial state tracking: `g_initialXxx`
+**Prefer C++ for new pipe messages.** Lua is acceptable only for choice popups that need to enumerate options (TechPopup, ProductionPopup). Everything else belongs in C++ — single implementation, no JSON helper duplication, centralized in `HandlePipeCommand()`.
+
+**Two schema sources must stay in sync.** `mcp_server._TOOLS` defines what the orchestrator handles; `schemas.py` defines what the LLM sees (OpenAI format). Adding a tool requires updating both. They are not auto-generated from each other.
+
+**Lua naming:** timer constants `AUTO_CLOSE_SECONDS`, timer variables `g_autoCloseTimer`, initial state tracking `g_initialXxx`.
+
+## Gotchas
+
+- `game_id` = `CvPreGame::mapRandomSeed()` — not sequential, changes each new game load.
+- `session_id` is a pipe-connection counter, auto-injected by orchestrator into requests, never exposed to the LLM. C++ includes it in messages for routing; ignore it at the game logic level.
+- `generate_reflection_prompt()` in `briefing.py` references `update_knowledge_base` which does not exist — stale, needs fixing before use.
+- The `interactive` flag in `run.py` blocks on stdin — incompatible with unsupervised mode. Keep it `false` in configs for actual runs.
+- Model name normalization for journal scoping lives implicitly in `journal.py::set_current_player()`. No documented convention yet.
 
 ## Documentation
 
-- `docs/getting-started.md` - Setup and quickstart
-- `docs/orchestrator.md` - CLI options and HTTP endpoints
-- `docs/protocol.md` - Pipe protocol architecture
-- `docs/state-schema.md` - Game state reference
-- `docs/unit-actions.md` - Unit action examples
-- `docs/llm-agent-design.md` - Agent architecture philosophy
+- `docs/systems.md` — system inventory with status ratings
+- `docs/issues.md` — active bugs and TODOs (not here)
+- `docs/popups.md` — popup handling inventory
+- `docs/prompt-design.md` — turn briefing principles, design maxims, what the LLM wants
+- `docs/orchestrator.md` — CLI options and HTTP endpoints
+- `docs/protocol.md` — pipe protocol details
+- `docs/state-schema.md` — game state reference
+- `MODEL_WELFARE.md` — philosophy on model experience and agency (worth reading)
