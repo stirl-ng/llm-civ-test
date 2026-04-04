@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /mnt/c/Users/stirling/Documents/github/llm-civ-test
 git add .
 
 if git diff --cached --quiet; then

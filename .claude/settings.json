@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/mnt/c/Users/stirling/Documents/github/llm-civ-test/.claude/hooks/log-commands.sh",
+            "command": ".claude/hooks/log-commands.sh",
             "timeout": 5
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/mnt/c/Users/stirling/Documents/github/llm-civ-test/.claude/hooks/auto-commit.sh",
+            "command": ".claude/hooks/auto-commit.sh",
             "timeout": 30
           }
         ]
