@@ -1,8 +1,87 @@
-# Python Architecture: Object Diagram
+# Python Architecture
 
 Components on the Python side only (up to the named pipe; DLL excluded).
 
 Items marked **[hardcoded]** are not modular or configurable.
+
+---
+
+## Block Diagram
+
+```mermaid
+flowchart TB
+    subgraph external["External"]
+        LLMAPI["LLM API\n(OpenAI / Gemini)"]
+        DLL["Civ V DLL\n(C++)"]
+    end
+
+    subgraph files["Files"]
+        CFG["config.yaml"]
+        JOURNAL_FILE["game_journal.json\n[hardcoded path]"]
+        LOGS["logs/game_N.jsonl\n[hardcoded dir]"]
+    end
+
+    subgraph agent["Agent Process  (experiments/ + agent_runtime/)"]
+        direction TB
+
+        CFG -->|backend, orchestrator| LOOP
+
+        subgraph prompt_layer["Prompt Assembly  [hardcoded text]"]
+            SP["SystemPrompt\nbuild_system_prompt()"]
+            TB2["TurnBriefing\ngenerate_turn_briefing()"]
+            PERS["Personality\n6 presets [hardcoded]"]
+            SP & TB2 --> PERS
+        end
+
+        subgraph model_layer["Model Layer"]
+            REG["ModelRegistry\nget_model(config)"]
+            MA["ModelAdapter\n(abstract)"]
+            OAI["OpenAIChat"]
+            GEM["GeminiChat"]
+            DUM["DummyModel"]
+            REG --> MA
+            MA --> OAI & GEM & DUM
+        end
+
+        subgraph memory["Memory"]
+            JRN["TurnJournal"]
+            JRN <--> JOURNAL_FILE
+        end
+
+        TOOLS["ToolSchemas\n45+ defs [hardcoded]\nnot auto-synced"]
+
+        LOOP["AgentLoop\nrun.py\n\npoll_interval=2.0s [hardcoded]\ntemperature=0.2 [hardcoded]\npolls /status [hardcoded — should push]"]
+
+        LOOP --> prompt_layer
+        LOOP --> model_layer
+        LOOP --> memory
+        LOOP --> TOOLS
+    end
+
+    subgraph orch["Orchestrator Process  (orchestrator/)"]
+        direction TB
+
+        HTTP["MCPHTTPServer\nlocalhost:8765 [hardcoded]\nno auth [hardcoded]\nGET /health  /status  /tools\nPOST /tool"]
+        MCP["CivMCPServer\n60+ tools [hardcoded]\n_TOOLS ≠ ToolSchemas: manual sync"]
+        GS["GameState\nturn / game_id / player\nthread-safe"]
+        PIPE["NamedPipeServer\n+ PipeConnection\n\\\\.\\pipe\\civv_llm [hardcoded]\nWindows only"]
+        MLOG["MessageLogger\nJSONL [hardcoded dir]"]
+
+        HTTP --> MCP
+        HTTP -->|reads| GS
+        MCP --> GS
+        MCP --> PIPE
+        MCP --> MLOG
+        PIPE -->|updates| GS
+        PIPE --> MLOG
+        MLOG --> LOGS
+    end
+
+    LOOP <-->|"HTTP  (poll /status + POST /tool)\n[hardcoded — should be SSE]"| HTTP
+    OAI <-->|"REST API"| LLMAPI
+    GEM <-->|"REST API"| LLMAPI
+    PIPE <-->|"Named pipe\n(JSON lines)"| DLL
+```
 
 ---
 
