@@ -17,9 +17,13 @@ class EventBroadcaster:
     def __init__(self):
         self._lock = threading.Lock()
         self._subscribers: list[tuple[queue.Queue, Optional[int]]] = []
+        self._pending_turn_start: Optional[dict] = None  # replayed to late subscribers
 
     def subscribe(self, player_id: Optional[int] = None) -> queue.Queue:
         """Register subscriber. player_id=None means receive all events.
+
+        Late subscribers (connecting after turn_start fired) receive the last
+        pending turn_start immediately so they don't miss their turn.
 
         Args:
             player_id: If set, only events for this player_id are delivered.
@@ -31,6 +35,14 @@ class EventBroadcaster:
         q: queue.Queue = queue.Queue(maxsize=64)
         with self._lock:
             self._subscribers.append((q, player_id))
+            # Replay pending turn_start to catch up late subscribers
+            if self._pending_turn_start is not None:
+                event_player_id = self._pending_turn_start.get("player_id")
+                if player_id is None or player_id == event_player_id:
+                    try:
+                        q.put_nowait(self._pending_turn_start)
+                    except queue.Full:
+                        pass
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
@@ -48,6 +60,10 @@ class EventBroadcaster:
         payload = {"event": event_type, **data}
         player_id = data.get("player_id")
         with self._lock:
+            if event_type == "turn_start":
+                self._pending_turn_start = payload
+            elif event_type == "disconnected":
+                self._pending_turn_start = None
             for q, filter_id in self._subscribers:
                 if filter_id is None or filter_id == player_id:
                     try:
