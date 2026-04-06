@@ -48,7 +48,6 @@ Civ V DLL (C++) ──named pipe──> Orchestrator (Python) ──HTTP :8765�
 
 - `game_id` = `CvPreGame::mapRandomSeed()` — not sequential, changes each new game load.
 - `session_id` is a pipe-connection counter, auto-injected by orchestrator into requests, never exposed to the LLM. C++ includes it in messages for routing; ignore it at the game logic level.
-- `generate_reflection_prompt()` in `briefing.py` references `update_knowledge_base` which does not exist — stale, needs fixing before use.
 - The `interactive` flag in `run.py` blocks on stdin — incompatible with unsupervised mode. Keep it `false` in configs for actual runs.
 - Model name normalization for journal scoping lives implicitly in `journal.py::set_current_player()`. No documented convention yet.
 

@@ -111,6 +111,13 @@ def build_system_prompt(personality: Optional[Personality] = None, interactive: 
         parts.append("The operator is a collaborator, not a boss. But when they speak, listen.")
         parts.append("")
 
+    # Personality
+    if personality:
+        parts.append("## Your Character")
+        parts.append("")
+        parts.append(build_personality_prompt(personality))
+        parts.append("")
+
     # Closing
     parts.append("## Remember")
     parts.append("")

@@ -16,8 +16,9 @@ __pycache__
 .DS_Store
 .env
 .env.*
+.claude/
 .claude/command-log.txt
+!.claude/settings.json
 *.log
 *.jsonl
 *.json
-!.claude/settings.json
