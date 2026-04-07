@@ -13,12 +13,41 @@ from typing import Any, Optional
 from .memory import get_journal
 
 
+def _render_state_section(state: dict) -> str:
+    """Render a compact Current State block from fetched game state."""
+    lines = ["## Current State"]
+
+    cities = state.get("cities") or []
+    if cities:
+        city_parts = []
+        for c in cities:
+            prod = c.get("production")
+            prod_str = f"producing {prod['name']} ({prod['turns_left']} turns)" if prod else "idle"
+            city_parts.append(f"{c['name']} (id={c['id']}) — {prod_str} — pop {c['population']}")
+        lines.append("**Cities:** " + " | ".join(city_parts))
+
+    units = state.get("units") or []
+    if units:
+        unit_parts = [f"{u['unit_type_name']} #{u['id']} at ({u['x']},{u['y']})" for u in units]
+        lines.append("**Units:** " + " | ".join(unit_parts))
+
+    research = state.get("current_research")
+    available = state.get("available_techs") or []
+    if research or available:
+        res_str = f"{research['name']} ({research['turns_left']} turns left)" if research else "none"
+        avail_str = ", ".join(t["name"] for t in available if not research or t["id"] != research.get("id"))
+        lines.append(f"**Research:** {res_str}" + (f" | Available: {avail_str}" if avail_str else ""))
+
+    return "\n".join(lines)
+
+
 def generate_turn_briefing(
     turn_number: int,
     game_id: Optional[int] = None,
     player_name: Optional[str] = None,
     civ_name: Optional[str] = None,
     user_message: Optional[str] = None,
+    state: Optional[dict] = None,
 ) -> str:
     """Generate a narrative turn briefing.
 
@@ -57,6 +86,11 @@ def generate_turn_briefing(
         if context:
             parts.append(context)
             parts.append("")
+
+    # Live game state - explicit IDs so the model doesn't need to look them up
+    if state:
+        parts.append(_render_state_section(state))
+        parts.append("")
 
     # If this is a new game without journal context, note the fresh start
     if game_id is not None and turn_number == 0:
