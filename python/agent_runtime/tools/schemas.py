@@ -394,13 +394,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "choose_tech",
-            "description": "Select a technology to research.",
+            "description": "Select a technology to research. Use tech_id from get_available_techs. On failure, error.code is one of: ALREADY_RESEARCHED (pick a different tech), PREREQS_NOT_MET (need earlier techs first), INVALID_TECH (bad ID), CANNOT_RESEARCH (mod restriction). Error includes tech_name for confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tech_id": {
                         "type": "integer",
-                        "description": "ID of the technology to research",
+                        "description": "ID of the technology to research. Get valid IDs from get_available_techs — never guess.",
                     },
                 },
                 "required": ["tech_id"],
