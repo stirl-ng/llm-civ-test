@@ -416,6 +416,17 @@ class NamedPipeServer:
                 "player_name": message.get("player_name"),
             })
 
+        # Reconnect recovery: DLL doesn't resend turn_start on pipe reconnect,
+        # so synthesize one from the first heartbeat if no turn is pending.
+        elif msg_type == "heartbeat" and self._broadcaster and not self._broadcaster.has_pending_turn():
+            logger.info("Synthesizing turn_start from heartbeat (reconnect recovery)")
+            self._broadcaster.emit("turn_start", {
+                "turn":        message.get("turn"),
+                "game_id":     message.get("game_id"),
+                "player_id":   message.get("player_id"),
+                "player_name": message.get("player_name"),
+            })
+
     def _serve_loop(self) -> None:
         """Main server loop: create pipe, wait for client, handle messages."""
         while self._running:

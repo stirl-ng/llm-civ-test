@@ -45,6 +45,10 @@ class EventBroadcaster:
                         pass
         return q
 
+    def has_pending_turn(self) -> bool:
+        with self._lock:
+            return self._pending_turn_start is not None
+
     def unsubscribe(self, q: queue.Queue) -> None:
         """Remove a subscriber queue."""
         with self._lock:
