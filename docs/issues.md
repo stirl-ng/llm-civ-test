@@ -4,11 +4,6 @@ These are known problems and pending work. Not a graveyard — remove entries wh
 
 ---
 
-## Runner polls instead of subscribing to push events
-`run.py` calls `/status` every 2 seconds to detect new turns. This violates the "always push, never poll" principle. The orchestrator should expose an SSE endpoint that pushes `turn_start` (and other events) to subscribed runners. Each runner subscribes filtered to its `player_id`. Fixes latency, enables clean multi-agent support, and removes the poll interval config entirely.
-
----
-
 ## Multi-agent not yet supported
 The orchestrator has a single `GameState` object with no concept of multiple simultaneous runners. To support multiple agents (one per civ):
 - Orchestrator needs per-player event routing
@@ -87,8 +82,8 @@ See `docs/prompt-design.md`. For games > ~50 turns, accumulated context will ove
 
 ---
 
-## unit-actions.md accuracy unverified
-`docs/unit-actions.md` documents response schemas (e.g., `state_delta` fields) that may not match current DLL output. Verify against live DLL responses before relying on it.
+## unit-actions.md response schema unverified
+`docs/unit-actions.md` documents that action responses include a `state_delta` field. This has not been verified against live DLL output — the DLL may not emit deltas at all. Verify before relying on it.
 
 ---
 

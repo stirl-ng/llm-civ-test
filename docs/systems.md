@@ -50,15 +50,15 @@ Interfaces: Consumed by model adapters; must mirror `mcp_server._TOOLS`
 ---
 
 ## Agent Turn Loop
-**Status: `needs-rework`**
+**Status: `in-progress`**
 
-Currently polls orchestrator `/status` for new turns (violates push principle — see `docs/issues.md`). Target: subscribe to orchestrator SSE stream, receive `turn_start` events for this runner's `player_id`.
+Subscribes to orchestrator SSE stream at `/events`, receives `turn_start` events, runs each turn to completion.
 
-On turn start: build briefing (notifications + journal context + basic status) → send system prompt + briefing to LLM → execute tool calls → forced reflection before `end_turn` → loop until `end_turn` succeeds or timeout.
+On turn start: build briefing (notifications + journal context + basic status) → send system prompt + briefing to LLM → execute tool calls → loop until `end_turn` succeeds or timeout.
 
 Journal tools (`record_lesson`, `get_recaps`, etc.) are handled locally here, not through the orchestrator. Each runner is scoped to one `player_id`; multiple runners can run simultaneously for multi-agent games.
 
-Files: `python/experiments/run.py`
+Files: `python/agent_runtime/runner.py`, `python/agent_runtime/turn_runner.py`
 Interfaces: Orchestrator HTTP (→ SSE), model adapters, journal (local process)
 
 Note: `interactive` mode (stdin prompting) is vestigial — keep `false` for unsupervised runs.
