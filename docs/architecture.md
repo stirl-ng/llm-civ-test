@@ -257,32 +257,25 @@ classDiagram
     class CivMCPServer {
         <<orchestrator/mcp_server.py>>
         _send_request : Callable
-        game_state : GameState
+        _pipe_server : NamedPipeServer
         _message_logger : MessageLogger
         _TOOLS : Dict
         execute_tool(name, args) Any
     }
     note for CivMCPServer "60+ tools [hardcoded]\n_TOOLS dict and ToolSchemas MUST be\nkept in sync manually — no enforcement"
 
-    class GameState {
-        <<orchestrator/game_state.py>>
-        _turn_number : int
-        _game_id : int
-        _session_id : int
-        _player_id : int
-        _player_name : str
-        _connected : bool
-        update_from_message(msg)
-    }
-
     class NamedPipeServer {
         <<orchestrator/pipe_server.py>>
         pipe_name : str
-        game_state : GameState
-        _pipe_conn : PipeConnection
+        _turn_number : int
+        _game_id : int
+        _player_id : int
+        _player_name : str
+        _connected : bool
         send_request(req, timeout) Any
+        get_status() dict
     }
-    note for NamedPipeServer "pipe_name=\\.\\pipe\\civv_llm [hardcoded default]\nWindows named pipe only — not portable"
+    note for NamedPipeServer "pipe_name=\\.\\pipe\\civv_llm [hardcoded default]\nWindows named pipe only — not portable\ngame state tracked inline (no separate GameState class)"
 
     class PipeConnection {
         <<orchestrator/pipe_server.py>>
@@ -294,7 +287,6 @@ classDiagram
     class MessageLogger {
         <<orchestrator/message_logger.py>>
         log_dir : Path
-        _game_state : GameState
         log(type, data, direction)
     }
     note for MessageLogger "log_dir=python/logs/ [hardcoded default]\nper-game JSONL files"
@@ -331,8 +323,7 @@ classDiagram
     GameNarrative *-- TurnRecap
 
     MCPHTTPServer --> CivMCPServer        : delegates tool calls
-    MCPHTTPServer --> GameState           : reads for /status and /events
-    CivMCPServer --> GameState            : reads metadata
+    MCPHTTPServer --> NamedPipeServer      : reads for /status and /events
     CivMCPServer --> NamedPipeServer      : calls send_request()
     CivMCPServer --> MessageLogger        : logs tool calls
 

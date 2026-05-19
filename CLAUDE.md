@@ -60,6 +60,8 @@ When the system is launched via `python launch.py`, all process output is captur
 
 Check these first when debugging. The runner log shows LLM errors directly; the orchestrator log shows pipe/SSE events; the JSONL shows the full message trace.
 
+For deeper post-game analysis: `python -m orchestrator.analyze_logs [--game-id ID] [--output json|text]` — parses a JSONL log and summarizes failure patterns, repeated errors, and missing tool coverage.
+
 ## Gotchas
 
 - `game_id` = `CvPreGame::mapRandomSeed()` — not sequential, changes each new game load.

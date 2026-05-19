@@ -35,19 +35,13 @@ Waits for the DLL to connect, then starts the MCP HTTP server on `http://localho
 
 ### 3. Configure and run the agent
 
-Create or copy a config in `python/configs/experiments/`:
+Copy the sample config and fill in your model:
 
-```yaml
-backend:
-  kind: openai          # or: gemini
-  model: gpt-4o
-orchestrator:
-  url: http://localhost:8765
-agent:
-  temperature: 0.7
+```bash
+cp python/configs/experiments/sample.yaml python/configs/experiments/myconfig.yaml
 ```
 
-Then run the agent runner:
+Set your API key as an environment variable (`OPENAI_API_KEY` or `GEMINI_API_KEY`) — never put keys in the config file. Then run the agent runner:
 
 ```bash
 python -m agent_runtime --config openai

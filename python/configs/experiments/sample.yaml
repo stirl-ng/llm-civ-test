@@ -1,0 +1,17 @@
+# Sample agent config — copy this file and rename it (e.g. openai.yaml, gemini.yaml)
+# Real configs are gitignored; this file is the only tracked one in this directory.
+
+backend:
+  kind: openai                  # openai | gemini
+  model: gpt-4o
+  # api_key: set via OPENAI_API_KEY env var (never put keys here)
+  # For OpenAI-compatible servers (vLLM, Ollama, etc.):
+  # base_url: http://localhost:11434/v1
+
+orchestrator:
+  url: http://localhost:8765
+  pipe: "\\\\.\pipe\\civv_llm"  # Windows named pipe (default)
+  turn_timeout: 300             # seconds before forcibly ending a stuck turn
+
+agent:
+  temperature: 0.7

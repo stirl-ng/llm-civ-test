@@ -23,4 +23,5 @@ __pycache__
 *.jsonl
 *.json
 python/logs/pids.txt
-python/configs/experiments/
+python/configs/experiments/*
+!python/configs/experiments/sample.yaml

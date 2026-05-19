@@ -53,10 +53,11 @@ curl -X POST http://localhost:8765/tool \
 | File | Purpose |
 |------|---------|
 | `__main__.py` | Entry point, CLI |
-| `pipe_server.py` | Named pipe client, request/response routing |
+| `pipe_server.py` | Named pipe client, request/response routing, game state tracking |
 | `mcp_server.py` | Tool executor (`_TOOLS` dict) |
-| `mcp_http_server.py` | HTTP wrapper |
-| `game_state.py` | Thread-safe game metadata |
+| `mcp_http_server.py` | HTTP/SSE wrapper |
+| `event_broadcaster.py` | Thread-safe pub/sub bus for SSE push to agent runners |
 | `message_logger.py` | Per-game JSONL logs → `logs/game_{game_id}.jsonl` |
 | `dashboard.py` | Debug web UI (see `docs/systems.md` for status) |
 | `map_renderer.py` | ASCII map rendering for `get_map_view` |
+| `analyze_logs.py` | Post-game analysis tool — run with `python -m orchestrator.analyze_logs` |
