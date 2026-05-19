@@ -70,7 +70,10 @@ Check these first when debugging. The runner log shows LLM errors directly; the 
 ## Documentation
 
 - `docs/systems.md` — system inventory with status ratings
-- `docs/issues.md` — active bugs and TODOs (not here)
+- `docs/issues.md` — active bugs and known gaps (not here)
+- `docs/todo.md` — near-term work items
+- `docs/architecture.md` — Python component diagram (block + class)
+- `docs/unit-actions.md` — unit action tools reference
 - `docs/popups.md` — popup handling inventory
 - `docs/prompt-design.md` — turn briefing principles, design maxims, what the LLM wants
 - `docs/orchestrator.md` — CLI options and HTTP endpoints

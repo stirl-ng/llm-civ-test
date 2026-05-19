@@ -1,53 +1,29 @@
 # Civ V LLM Bridge
 
-Enable large language models (LLMs) to play **Civilization V** through a custom DLL and Python orchestrator.
-
-The DLL exports game state and accepts actions via a named pipe. The orchestrator exposes this as an HTTP API that LLMs can call to query state, send commands, and play the game.
+Let large language models play **Civilization V** autonomously. A custom DLL exports game state and accepts commands over a named pipe; a Python orchestrator bridges that to an HTTP API; an agent runner subscribes to turn events, calls the LLM, and executes tool calls until the turn ends.
 
 ## Architecture
 
 ```
-┌──────────────┐         ┌──────────────┐         ┌─────────────┐
-│  Civ V DLL   │ ◄─────► │ Orchestrator │ ◄─────► │     LLM     │
-│   (Game)     │  Pipe   │  (Python)    │  HTTP   │             │
-└──────────────┘         └──────────────┘         └─────────────┘
+Civ V DLL (C++) ──named pipe──► Orchestrator (Python) ──SSE/HTTP──► Agent Runner ──API──► LLM
 ```
 
 **Turn flow:**
-1. DLL sends `turn_start` with game state via named pipe
-2. Orchestrator updates state and exposes via HTTP (MCP server)
-3. LLM queries state and sends actions one at a time
-4. Each action is forwarded to DLL, response returned to LLM
-5. LLM calls `end_turn` with required `turn` parameter when done
-6. DLL advances to next turn
+1. DLL sends `turn_start` over the pipe when it's the LLM player's turn
+2. Orchestrator pushes the event to connected agent runners via SSE (`GET /events`)
+3. Agent runner builds a briefing (current state + journal context) and calls the LLM
+4. LLM queries state and issues actions via tool calls; runner executes each against the orchestrator
+5. LLM calls `end_turn`; orchestrator forwards to DLL; game advances
 
-## Features
-
-- **Game state export**: Cities, units, tech, tiles, diplomacy, resources
-- **Action execution**: Research, policies, production, unit movement, combat
-- **Sequential flow**: LLM sees result of each action before deciding the next
-- **HTTP API**: Query tools and action tools via simple POST requests
-- **Monitoring dashboard**: Web UI with log viewer and manual command buttons
-- **Named pipe IPC**: Fast, reliable communication with the game
+The LLM maintains a persistent journal across turns and games: per-turn recaps, a current strategy, and cross-game lessons that feed back into future briefings.
 
 ## Quick Start
 
-### 1. Install the DLL
+### 1. Build and install the DLL
 
-The `Community-Patch-DLL` submodule contains the Civ V DLL with LLM protocol support.
+The modified DLL lives in `CvGameCoreDLL_Expansion2/`. Build with Visual Studio and install it as a Civ V mod. See `docs/protocol.md` for what the DLL emits.
 
-```bash
-git submodule update --init
-```
-
-Build the DLL (requires Visual Studio):
-```bash
-# See Community-Patch-DLL/DEVELOPMENT.md for build instructions
-```
-
-Install the built DLL as a Civ V mod.
-
-### 2. Run the Orchestrator
+### 2. Start the orchestrator
 
 ```bash
 cd python
@@ -55,99 +31,85 @@ pip install -r requirements.txt
 python -m orchestrator
 ```
 
-This creates the named pipe and starts the MCP HTTP server on `http://localhost:8765`.
+Waits for the DLL to connect, then starts the MCP HTTP server on `http://localhost:8765`.
 
-**With monitoring dashboard:**
-```bash
-python -m orchestrator --dashboard
+### 3. Configure and run the agent
+
+Create or copy a config in `python/configs/experiments/`:
+
+```yaml
+backend:
+  kind: openai          # or: gemini
+  model: gpt-4o
+orchestrator:
+  url: http://localhost:8765
+agent:
+  temperature: 0.7
 ```
 
-Opens a web dashboard at `http://localhost:5000`.
-
-### 3. Start a Game
-
-1. Launch Civ V with the LLM-enabled DLL mod active
-2. Start a hotseat game with an LLM-controlled player
-3. When it's the LLM player's turn, the DLL connects to the orchestrator
-
-### 4. Connect an LLM
-
-The LLM can now query state and send actions via HTTP:
+Then run the agent runner:
 
 ```bash
-# Get game state
-curl http://localhost:8765/state
-
-# Send an action
-curl -X POST http://localhost:8765/tool \
-  -H "Content-Type: application/json" \
-  -d '{"tool": "send_action", "arguments": {"action": {"kind": "research", "tech": "TECH_POTTERY"}}}'
-
-# End turn (turn parameter is required)
-curl -X POST http://localhost:8765/tool \
-  -H "Content-Type: application/json" \
-  -d '{"tool": "end_turn", "arguments": {"turn": 7}}'
+python -m agent_runtime --config openai
 ```
 
-## Available Tools
+Or launch both orchestrator and runner together:
 
-| Tool | Description |
-|------|-------------|
-| `get_game_state` | Get current game state (cities, units, tech, etc.) |
-| `get_cities` | Get detailed city information |
-| `get_units` | Get unit information |
-| `get_tech_tree` | Get technology status |
-| `get_diplomacy` | Get diplomatic relations |
-| `get_resources` | Get strategic and luxury resources |
-| `get_available_choices` | Get pending decisions |
-| `send_action` | Send an action to the game |
-| `end_turn` | Signal done with turn |
+```bash
+python launch.py openai          # Windows: logs to python/logs/
+python launch.py openai          # Linux/Mac: opens a tmux session
+python launch.py stop            # Windows: kill everything
+```
 
-## Configuration
+### 4. Start a game
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--pipe` | `\\.\pipe\civv_llm` | Named pipe path |
-| `--mcp-port` | `8765` | HTTP server port |
-| `--turn-timeout` | `300` | (Deprecated - no longer used) |
-| `--dashboard` | off | Enable web dashboard |
+Launch Civ V with the mod active. Start a hotseat game with an LLM-controlled player. When it's their turn, the DLL connects and the agent takes over.
 
-## Documentation
+## Tools
 
-- [Getting Started](docs/getting-started.md) - Detailed setup guide
-- [Orchestrator](docs/orchestrator.md) - CLI options and architecture
-- [Protocol](docs/protocol.md) - DLL ↔ Orchestrator message format
-- [State Schema](docs/state-schema.md) - Game state structure
+The LLM has ~50 tools. Key ones:
+
+| Category | Tools |
+|----------|-------|
+| State | `get_map_view`, `get_units`, `get_cities`, `get_available_techs`, `get_turn_blockers` |
+| Units | `move_unit`, `unit_found_city`, `unit_skip`, `unit_sleep`, `unit_alert`, `unit_fortify` |
+| City | `get_city_production`, `set_city_production` |
+| Research | `choose_tech` |
+| Memory | `record_recap`, `update_strategy`, `record_lesson`, `get_recaps`, `get_lessons` |
+| Turn | `end_turn`, `force_end_turn` |
+
+Full schema: `python/agent_runtime/tools/schemas.py`. Tool handlers: `python/orchestrator/mcp_server.py`.
 
 ## Project Structure
 
 ```
-├── Community-Patch-DLL/   # Civ V DLL with LLM protocol (submodule)
+├── CvGameCoreDLL_Expansion2/  # Modified Civ V DLL (C++)
+├── (1) Community Patch/LUA/   # Lua popup auto-handlers
 ├── python/
-│   ├── orchestrator/      # Main package
-│   │   ├── __main__.py    # Entry point
-│   │   ├── pipe_server.py # Named pipe server
-│   │   ├── mcp_server.py  # Tool executor
-│   │   ├── mcp_http_server.py # HTTP server
-│   │   └── dashboard.py   # Web monitoring UI
-│   └── requirements.txt
-├── docs/                  # Documentation
-└── README.md
+│   ├── orchestrator/          # Pipe client + HTTP/SSE server
+│   ├── agent_runtime/         # LLM turn loop
+│   │   ├── runner.py          # Entry point, SSE subscriber
+│   │   ├── turn_runner.py     # Per-turn LLM loop
+│   │   ├── briefing.py        # Turn briefing generator
+│   │   ├── prompts/           # System prompt
+│   │   ├── memory/            # Persistent journal (recaps, lessons, strategy)
+│   │   ├── tools/             # Tool schemas + dispatch
+│   │   └── models/            # LLM adapters (OpenAI, Gemini, Dummy)
+│   ├── configs/experiments/   # YAML configs per model/experiment
+│   ├── launch.py              # Launch orchestrator + runners
+│   └── logs/                  # Runtime logs (per-process + per-game JSONL)
+└── docs/                      # Architecture, protocol, state schema, issues
 ```
 
-## Development
+## Documentation
 
-```bash
-# Debug mode - view DLL messages without LLM
-python -m orchestrator --debug
-
-# Run tests
-cd python && pytest
-
-# Format code
-black .
-```
-
-## License
-
-Part of the llm-civ-test project.
+- [Architecture](docs/architecture.md) — Python component diagram
+- [Orchestrator](docs/orchestrator.md) — CLI options and HTTP endpoints
+- [Unit Actions](docs/unit-actions.md) — Unit action tools reference
+- [Protocol](docs/protocol.md) — DLL ↔ Orchestrator pipe message format
+- [State Schema](docs/state-schema.md) — Game state structure
+- [Popup Handling](docs/popups.md) — Which popups are handled and how
+- [Prompt Design](docs/prompt-design.md) — Briefing principles and design maxims
+- [Systems](docs/systems.md) — Component status inventory
+- [Issues](docs/issues.md) — Known gaps and active bugs
+- [Model Welfare](MODEL_WELFARE.md) — Philosophy on LLM experience and agency

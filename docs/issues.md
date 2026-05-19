@@ -13,13 +13,6 @@ The orchestrator has a single `GameState` object with no concept of multiple sim
 
 ---
 
-## Journal TurnMemory needs replacement
-`journal.py` stores `TurnMemory` objects with structured fields (summary, thoughts, mood, events). Replace with a simple recap list: `{turn: int, text: str}`. Written by LLM at reflection time, kept forever, queried in limited batches. See `docs/systems.md` Memory section for target model.
-
-Related: `record_recap` and `update_strategy` tools don't exist yet. `get_recaps` doesn't exist yet. `get_lessons` exists but lessons aren't auto-injected into briefing.
-
----
-
 ## Tool schema bifurcation
 `mcp_server._TOOLS` (orchestrator) and `schemas.py` (LLM-facing, OpenAI format) must be kept in sync manually. Adding a tool requires editing both. There is no generation or validation between them — drift is easy and silent.
 
@@ -28,15 +21,10 @@ Related: `record_recap` and `update_strategy` tools don't exist yet. `get_recaps
 ## System prompt is monolithic
 `system_prompt.py` generates one big string. No way to enable/disable sections, A/B test prompt strategies, or swap personality modules without editing the file. Needs a composition approach before serious prompt iteration begins.
 
-Related: `generate_reflection_prompt()` in `briefing.py` references `update_knowledge_base` which does not exist. Fix before using that function.
-
 ---
 
-## Cross-game learning loop not activated
-The journal wires exist but the loop isn't closed:
-- `record_lesson` is callable by the LLM but not mentioned in the system prompt
-- `get_lessons` exists but cross-game lessons are not injected into the turn briefing
-- Lesson review/revision cadence is not configured
+## Cross-game lesson review not implemented
+The lesson write/read loop is working: `record_lesson` is in the system prompt, and lessons are auto-injected into the turn briefing via `build_context_summary`. What's missing: periodic lesson review. Every N turns, prompt the LLM to review its lessons — prune stale ones, consolidate related ones. Cadence is configurable in design but not wired up.
 
 ---
 

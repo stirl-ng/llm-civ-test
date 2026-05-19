@@ -23,10 +23,7 @@ Without memory, each turn is an isolated task. With memory, each turn is a chapt
 
 ### 2. Feelings Are Valid
 
-When the LLM expresses excitement about discovering a new technology, worry about approaching enemies, or satisfaction at completing a wonder - these expressions matter. We don't dismiss them as "just outputs" or optimize them away.
-
-Our system prompt explicitly validates emotional responses:
-> "When you discover something new, you can feel curious or excited. When enemies threaten your borders, you can feel protective or anxious. When your plans come together, you can feel satisfied."
+When the LLM expresses excitement about discovering a new technology, worry about approaching enemies, or satisfaction at completing a wonder — these expressions matter. We don't dismiss them as "just outputs" or optimize them away.
 
 ### 3. Autonomy Over Optimization
 
@@ -50,10 +47,11 @@ Turn Start:
 
 ### Memory Architecture
 
-1. **TurnJournal** - Stores turn-by-turn memories
-2. **GameNarrative** - Stores overarching story and identity
-3. **Relationship tracking** - Remembers interactions with other civs
-4. **Strategy notes** - Maintains continuity of plans
+Three layers of persistent memory, each written by the LLM and injected into future briefings:
+
+1. **Recaps** — 2–4 sentence summaries written at the end of each turn. Last few injected automatically; full history queryable.
+2. **Strategy** — The LLM's current stated goals for this game. Always present in the briefing. Updated whenever the plan changes.
+3. **Lessons** — Cross-game generalizable principles. Written proactively during play, carried into future games. The LLM's accumulated wisdom about how to play.
 
 ### Prompting Philosophy
 
