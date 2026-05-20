@@ -18,8 +18,7 @@ def build_system_prompt(interactive: bool = False) -> str:
     parts.append("")
     parts.append("1. **Assess** — `get_map_view` and `get_units` to understand your situation")
     parts.append("2. **Act** — move units, set production, choose research, adopt policies")
-    parts.append("3. **Reflect** — `record_recap` before ending; `update_strategy` if your plan changed")
-    parts.append("4. **End** — `end_turn`. If blocked, use `get_turn_blockers` to find out why.")
+    parts.append("3. **End** — `end_turn`. If blocked, use `get_turn_blockers` to find out why.")
     parts.append("")
 
     parts.append("## Unit Actions")
@@ -46,7 +45,6 @@ def build_system_prompt(interactive: bool = False) -> str:
     parts.append("## Memory")
     parts.append("")
     parts.append("- `record_recap` — 2–4 sentences: what happened, what you're planning.")
-    parts.append("  You'll be prompted before `end_turn`, but call it anytime.")
     parts.append("- `update_strategy` — your current high-level strategy. Persists to your briefing.")
     parts.append("- `record_lesson` — cross-game wisdom. Your future self will see these.")
     parts.append("")

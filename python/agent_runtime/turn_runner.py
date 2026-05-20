@@ -10,7 +10,7 @@ from agent_runtime.models.base import GenerateResponse, ToolCall
 from agent_runtime.tools.dispatch import execute_tool
 from agent_runtime.tools.schemas import get_openai_tools
 from agent_runtime.prompts import build_system_prompt
-from agent_runtime.briefing import generate_turn_briefing, generate_reflection_prompt
+from agent_runtime.briefing import generate_turn_briefing
 
 try:
     from orchestrator.message_logger import get_message_logger
@@ -90,7 +90,6 @@ def run_turn(
 
     iterations = 0
     tool_calls_total = 0
-    reflection_done = False
     silent_streak = 0
 
     print(f"  Starting turn {ctx.turn}...")
@@ -136,22 +135,10 @@ def run_turn(
             if mid_turn_msg:
                 messages.append({"role": "user", "content": f"**[Operator]:** {mid_turn_msg}"})
 
-        inject_reflection = False
         for tool_call in response.tool_calls:
             tool_calls_total += 1
 
             try:
-                if tool_call.name in ("end_turn", "force_end_turn") and not reflection_done:
-                    print(f"    [<] {tool_call.name} intercepted -- prompting reflection")
-                    result = {
-                        "ok": True,
-                        "message": "Before ending your turn, please reflect. See the message below.",
-                        "reflection_needed": True,
-                    }
-                    messages.append(build_tool_result_message(tool_call, result))
-                    inject_reflection = True
-                    continue
-
                 result = execute_tool(tool_call, ctx)
                 is_ok = result.get("ok", True)
                 print(f"    {'[ok]' if is_ok else '[x]'} {tool_call.name}: {json.dumps(result)}")
@@ -184,9 +171,5 @@ def run_turn(
                     tool_call,
                     {"ok": False, "error": str(e)},
                 ))
-
-        if inject_reflection:
-            messages.append({"role": "user", "content": generate_reflection_prompt(ctx.turn)})
-            reflection_done = True
 
     return {"turn": ctx.turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
