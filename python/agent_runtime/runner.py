@@ -49,6 +49,21 @@ def load_config(config_arg: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def make_halt_check(base_url: str):
+    """Return a callable that polls the orchestrator for a halt signal."""
+    def check() -> str | None:
+        try:
+            r = requests.get(f"{base_url}/observer/halt_status", timeout=2)
+            if r.ok:
+                data = r.json()
+                if data.get("active"):
+                    return data.get("reason", "Observer halt")
+        except Exception:
+            pass
+        return None
+    return check
+
+
 def run_game_loop(
     model,
     base_url: str,
@@ -116,6 +131,7 @@ def run_game_loop(
                             turn=current_turn,
                             game_id=current_game_id,
                             player_name=player_name,
+                            halt_check=make_halt_check(base_url),
                         )
                         result = run_turn(
                             model,
@@ -125,6 +141,9 @@ def run_game_loop(
                             temperature=temperature,
                         )
                         print(f"\nSummary: {result['iterations']} iterations, {result['tool_calls']} tool calls")
+                        if result.get("halted"):
+                            print(f"\n{'='*50}\nHALTED: {result.get('reason')}\n{'='*50}")
+                            return
 
             except KeyboardInterrupt:
                 raise

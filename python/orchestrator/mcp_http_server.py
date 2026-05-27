@@ -27,6 +27,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     mcp_server: CivMCPServer = None  # Set by MCPHTTPServer
     broadcaster = None  # Set by MCPHTTPServer; Optional[EventBroadcaster]
+    _halt_state: dict = {"active": False, "reason": None}  # shared across all handler instances
 
     def log_message(self, format: str, *args):
         """Override to use our logger."""
@@ -75,6 +76,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         elif self.path == "/events":
             self._handle_sse()
 
+        elif self.path == "/observer/halt_status":
+            self._send_json(MCPHTTPHandler._halt_state.copy())
+
         else:
             self._send_error(404, "Not found")
 
@@ -115,6 +119,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         if self.path == "/tool":
             self._handle_tool_call(request)
+        elif self.path == "/observer/halt":
+            self._handle_observer_halt(request)
+        elif self.path == "/observer/clear_halt":
+            MCPHTTPHandler._halt_state["active"] = False
+            MCPHTTPHandler._halt_state["reason"] = None
+            self._send_json({"ok": True})
         else:
             self._send_error(404, "Not found")
 
@@ -150,6 +160,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             import traceback
             logger.error(f"Exception executing tool '{tool_name}': {e} arguments: {arguments} traceback: {traceback.format_exc()}")
             self._send_json({"ok": False, "error": str(e)}, status=500)
+
+    def _handle_observer_halt(self, request: dict):
+        reason = request.get("reason", "Observer requested halt")
+        MCPHTTPHandler._halt_state["active"] = True
+        MCPHTTPHandler._halt_state["reason"] = reason
+        logger.warning(f"HALT requested by observer: {reason}")
+        self._send_json({"ok": True, "reason": reason})
 
     def _handle_sse(self):
         """Handle a Server-Sent Events (SSE) stream request on GET /events."""

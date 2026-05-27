@@ -5,10 +5,11 @@ On Windows: background processes logging to files. Stop with: python launch.py s
 On Linux/Mac: uses a tmux session.
 
 Usage:
-  python launch.py                  # interactive config selection
-  python launch.py gemini           # single runner, no prompt
-  python launch.py gemini openai    # two runners
-  python launch.py stop             # kill previously launched processes (Windows)
+  python launch.py                        # interactive config selection
+  python launch.py gemini                 # single runner, no prompt
+  python launch.py gemini openai          # two runners
+  python launch.py gemini --observer obs  # runner + observer
+  python launch.py stop                   # kill previously launched processes (Windows)
 """
 import subprocess
 import sys
@@ -48,7 +49,7 @@ def pick_configs() -> list[str]:
 
 # ── Windows launcher ──────────────────────────────────────────────────────────
 
-def launch_windows(configs: list[str]) -> None:
+def launch_windows(configs: list[str], observer_cfg: str | None = None) -> None:
     python_exe = str(Path(sys.executable))
     here = Path(__file__).parent
     LOGS_DIR.mkdir(exist_ok=True)
@@ -69,6 +70,8 @@ def launch_windows(configs: list[str]) -> None:
     start("orchestrator", [python_exe, "-u", "-m", "orchestrator"], LOGS_DIR / "orchestrator.log")
     for cfg in configs:
         start(f"agent-{cfg}", [python_exe, "-u", "-m", "agent_runtime", "--config", cfg], LOGS_DIR / f"runner_{cfg}.log")
+    if observer_cfg:
+        start("observer", [python_exe, "-u", "-m", "observer", "--config", observer_cfg], LOGS_DIR / "observer.log")
 
     PID_FILE.write_text("\n".join(f"{pid} {label}" for label, pid in pids))
     print(f"\nStop with: python launch.py stop")
@@ -105,7 +108,7 @@ def session_exists() -> bool:
     return result.returncode == 0
 
 
-def launch_tmux(configs: list[str]) -> None:
+def launch_tmux(configs: list[str], observer_cfg: str | None = None) -> None:
     if session_exists():
         print(f"tmux session '{SESSION}' already exists — kill it first with: tmux kill-session -t {SESSION}")
         sys.exit(1)
@@ -120,6 +123,10 @@ def launch_tmux(configs: list[str]) -> None:
         tmux(["split-window", "-h", "-t", f"{SESSION}:orch"])
         tmux(["send-keys", "-t", f"{SESSION}:orch", runner_cmd(cfg), "Enter"])
 
+    if observer_cfg:
+        tmux(["split-window", "-h", "-t", f"{SESSION}:orch"])
+        tmux(["send-keys", "-t", f"{SESSION}:orch", f"python -m observer --config {observer_cfg}", "Enter"])
+
     tmux(["select-layout", "-t", f"{SESSION}:orch", "even-horizontal"])
     tmux(["attach-session", "-t", SESSION])
 
@@ -127,14 +134,22 @@ def launch_tmux(configs: list[str]) -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if sys.argv[1:] == ["stop"]:
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--observer", metavar="CONFIG", default=None)
+    parser.add_argument("configs", nargs="*")
+    known, _ = parser.parse_known_args()
+
+    if known.configs == ["stop"]:
         if sys.platform == "win32":
             stop_windows()
         else:
             print("Use: tmux kill-session -t civ")
         return
 
-    configs = sys.argv[1:] or pick_configs()
+    configs = known.configs or pick_configs()
+    observer_cfg = known.observer
+
     if not configs:
         print("No configs selected.")
         sys.exit(1)
@@ -144,14 +159,18 @@ def main() -> None:
         print(f"Unknown configs: {', '.join(unknown)}")
         sys.exit(1)
 
-    print(f"Launching: orchestrator + {configs}")
+    label = f"orchestrator + {configs}"
+    if observer_cfg:
+        label += f" + observer({observer_cfg})"
+    print(f"Launching: {label}")
+
     if sys.platform == "win32":
         if PID_FILE.exists():
             print("Stopping previous session...")
             stop_windows()
-        launch_windows(configs)
+        launch_windows(configs, observer_cfg)
     else:
-        launch_tmux(configs)
+        launch_tmux(configs, observer_cfg)
 
 
 if __name__ == "__main__":

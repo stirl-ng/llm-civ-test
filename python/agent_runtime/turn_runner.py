@@ -91,6 +91,7 @@ def run_turn(
     iterations = 0
     tool_calls_total = 0
     silent_streak = 0
+    halt_reason: str | None = None
 
     print(f"  Starting turn {ctx.turn}...")
 
@@ -107,7 +108,15 @@ def run_turn(
             print(f"  [!] Turn timeout ({timeout}s)")
             break
 
+        if ctx.halt_check is not None:
+            halt_reason = ctx.halt_check()
+            if halt_reason:
+                print(f"  [!] HALTED by observer: {halt_reason}")
+                break
+
         iterations += 1
+        if _message_logger:
+            _message_logger.log({"type": "iteration_start", "iteration": iterations}, direction="outgoing")
 
         try:
             response = model.generate(messages, tools=tools, temperature=temperature)
@@ -149,6 +158,7 @@ def run_turn(
                         "arguments": tool_call.arguments,
                         "result": result,
                         "ok": is_ok,
+                        "iteration": iterations,
                     }, direction="incoming")
                 messages.append(build_tool_result_message(tool_call, result))
 
@@ -172,4 +182,8 @@ def run_turn(
                     {"ok": False, "error": str(e)},
                 ))
 
-    return {"turn": ctx.turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
+    result = {"turn": ctx.turn, "iterations": iterations, "tool_calls": tool_calls_total, "success": False}
+    if halt_reason:
+        result["halted"] = True
+        result["reason"] = halt_reason
+    return result
