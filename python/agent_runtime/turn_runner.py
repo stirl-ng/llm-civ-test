@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from agent_runtime.context import TurnContext
-from agent_runtime.http_client import fetch_turn_state
+from agent_runtime.http_client import fetch_turn_state, fetch_notifications
 from agent_runtime.models.base import GenerateResponse, ToolCall
 from agent_runtime.tools.dispatch import execute_tool
 from agent_runtime.tools.schemas import get_openai_tools
@@ -92,6 +92,7 @@ def run_turn(
     tool_calls_total = 0
     silent_streak = 0
     halt_reason: str | None = None
+    seen_notification_uuids: set[str] = set()
 
     print(f"  Starting turn {ctx.turn}...")
 
@@ -117,6 +118,19 @@ def run_turn(
         iterations += 1
         if _message_logger:
             _message_logger.log({"type": "iteration_start", "iteration": iterations}, direction="outgoing")
+
+        # Inject any notifications that arrived since turn start
+        new_notifs = [
+            n for n in fetch_notifications(ctx.base_url, ctx.turn)
+            if n.get("uuid") not in seen_notification_uuids
+        ]
+        for n in new_notifs:
+            seen_notification_uuids.add(n["uuid"])
+        if new_notifs:
+            lines = [f"- {n['summary']}" for n in new_notifs]
+            event_msg = "**[Game Events]**\n" + "\n".join(lines)
+            print(f"  [{iterations}] Game events: {[n['summary'] for n in new_notifs]}")
+            messages.append({"role": "user", "content": event_msg})
 
         try:
             response = model.generate(messages, tools=tools, temperature=temperature)

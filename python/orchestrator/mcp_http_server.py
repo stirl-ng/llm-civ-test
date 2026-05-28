@@ -31,9 +31,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args):
         """Override to use our logger."""
-        # Suppress logging for health check endpoints to reduce spam
+        # Suppress logging for high-frequency polling endpoints to reduce spam
         message = format % args
-        if "/status" in message or "/health" in message:
+        if "/status" in message or "/health" in message or "/notifications" in message:
             logger.debug(message)
         else:
             logger.info(message)
@@ -78,6 +78,21 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/observer/halt_status":
             self._send_json(MCPHTTPHandler._halt_state.copy())
+
+        elif self.path.startswith("/notifications"):
+            from urllib.parse import urlparse, parse_qs
+            from .message_logger import get_message_logger
+            params = parse_qs(urlparse(self.path).query)
+            since_turn_str = params.get("since_turn", [None])[0]
+            since_turn = int(since_turn_str) if since_turn_str else None
+            metadata = self.mcp_server.get_metadata() if self.mcp_server else {}
+            game_id = metadata.get("game_id")
+            notifications = get_message_logger().query(
+                message_type="notification",
+                game_id=game_id,
+                since_turn=since_turn,
+            )
+            self._send_json({"notifications": notifications, "since_turn": since_turn, "game_id": game_id})
 
         else:
             self._send_error(404, "Not found")

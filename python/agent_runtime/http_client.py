@@ -25,6 +25,17 @@ def check_health(base_url: str) -> bool:
         return False
 
 
+def fetch_notifications(base_url: str, since_turn: int) -> list[dict[str, Any]]:
+    """Fetch notifications for the current turn (used for mid-turn injection)."""
+    try:
+        r = requests.get(f"{base_url}/notifications", params={"since_turn": since_turn}, timeout=3.0)
+        if r.ok:
+            return r.json().get("notifications", [])
+    except requests.exceptions.RequestException:
+        pass
+    return []
+
+
 def fetch_turn_state(base_url: str) -> dict[str, Any]:
     """Fetch live game state at turn start for briefing enrichment.
 
