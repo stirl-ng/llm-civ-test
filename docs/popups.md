@@ -24,7 +24,7 @@ Method column: **instant** = `PopupProcessed` fired immediately in `OnPopup`, po
 | Tech choice | `TechPopup.lua` | ✓ | state | Sends available techs to pipe before closing |
 | Production choice | `ProductionPopup.lua` | ✓ | state | Sends available items to pipe before closing |
 | Meet civilization intro | `LeaderHeadRoot.lua` | ✓ | timer | DEFAULT_ROOT popup type only |
-| City-state greeting | `CityStateGreetingPopup.lua` | ✓ | instant | Informational only; notification fires separately over pipe |
+| City-state greeting | `CityStateGreetingPopup.lua` | ✓ | instant | Informational only; notification fires separately over pipe. **Note:** must be listed with `import="1"` in modinfo or base game version runs instead. |
 | City-state diplomacy | `CityStateDiploPopup.lua` | ✓ | timer | Has action buttons; LLM interacts via tools not this popup |
 | Trade | `Includes/TradeLogic.lua` | ✓ | ? | Verify method |
 | Goody hut reward (informational) | `GoodyHutPopup.lua` | ✓ | timer | `BUTTONPOPUP_GOODY_HUT_REWARD` |
