@@ -560,6 +560,9 @@ class NamedPipeServer:
                 logger.warning(f"Failed to parse message: {e}")
                 continue
 
+            # Sync turn/game state from every DLL message, including responses.
+            self._update_state(message)
+
             # Try to deliver as response to pending request
             if self._pipe_conn and self._pipe_conn.deliver_response(message):
                 continue
