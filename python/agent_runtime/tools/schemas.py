@@ -14,7 +14,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_units",
-            "description": "Get all units owned by the player with their IDs, positions, types, and moves remaining.",
+            "description": "Get all units owned by the player with their IDs, positions, types, moves remaining, territory_owner (player ID of the tile's owner, -1 if unowned), is_trespassing (in foreign territory without open borders), is_embarked (on water as embarked unit), activity (AWAKE/MISSION/SLEEP/HOLD/HEAL/SENTRY), and for MISSION units: mission (XML type name e.g. MISSION_BUILD, MISSION_MOVE_TO), mission_target {x,y} for move missions, build_name for build missions. Do NOT issue new commands to units with activity=MISSION.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -167,7 +167,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_visible_tiles",
-            "description": "Get raw tile data for all revealed tiles. Prefer get_map_view for visual overview.",
+            "description": "Get structured JSON tile data for all revealed tiles: terrain, feature, resource, improvement, route, territory_owner, units, city. Use this for strategic analysis and decisions across the full known map.",
             "parameters": {
                 "type": "object",
                 "properties": {},

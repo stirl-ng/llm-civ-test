@@ -26,6 +26,8 @@ def build_system_prompt(interactive: bool = False) -> str:
     parts.append("Always call `get_units` first — never guess unit IDs.")
     parts.append("- `move_unit(unit_id, to)` — move to tile [x, y]; supports multi-turn pathfinding")
     parts.append("- `unit_found_city(unit_id)` / `unit_sleep(unit_id)` / `unit_skip(unit_id)` / `unit_alert(unit_id)`")
+    parts.append("- Units with `activity=MISSION` are already executing a multi-turn order (building, moving).")
+    parts.append("  Do not re-issue commands to them — interrupting resets progress.")
     parts.append("")
 
     parts.append("## Production & Research")
