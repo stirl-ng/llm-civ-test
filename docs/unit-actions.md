@@ -96,6 +96,30 @@ Set a unit to heal. Unit skips movement and recovers HP.
 
 ---
 
+## Worker Actions
+
+Workers build tile improvements over multiple turns.
+
+### Workflow
+
+1. Call `get_unit_build_options(unit_id=<worker_id>)` — returns available builds for each nearby tile, with `build_type` IDs and `turns_required`.
+2. Call `move_unit` to place the worker on the target tile if it isn't already there.
+3. Call `unit_build(unit_id=<worker_id>, build_type=<id>)` — worker starts building and continues automatically on future turns.
+
+### `unit_build`
+
+Build an improvement at the worker's current tile.
+
+```json
+{ "unit_id": 1005, "build_type": 3 }
+```
+
+**Errors:** `UNIT_NOT_FOUND`, `UNIT_NOT_OWNED`, `CANNOT_BUILD`, `INVALID_BUILD_TYPE`
+
+`build_type` is an opaque integer — always get it from `get_unit_build_options`, never hardcode it.
+
+---
+
 ## Typical Turn Flow
 
 1. Call `get_units` — identify units needing orders

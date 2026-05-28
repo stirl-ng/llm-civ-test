@@ -443,6 +443,32 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "unit_build",
+            "description": (
+                "Order a worker to build an improvement (farm, mine, road, etc.) at its current tile. "
+                "Call get_unit_build_options first to see available build_type IDs and where the worker needs to be. "
+                "Move the worker to the target tile before calling this. "
+                "Building takes multiple turns — the worker will continue automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "unit_id": {
+                        "type": "integer",
+                        "description": "ID of the worker unit. Must come from get_units results.",
+                    },
+                    "build_type": {
+                        "type": "integer",
+                        "description": "Build type ID from get_unit_build_options. Never guess.",
+                    },
+                },
+                "required": ["unit_id", "build_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_city_production",
             "description": "Set what a city should produce. Always call get_city_production first to see available options and their IDs.",
             "parameters": {

@@ -339,6 +339,10 @@ class CivMCPServer:
         "unit_heal": ("_unit_heal", {
             "unit_id": "required int - ID of the unit",
         }),
+        "unit_build": ("_unit_build", {
+            "unit_id": "required int - ID of the worker unit",
+            "build_type": "required int - build type ID from get_unit_build_options",
+        }),
         "end_turn": ("_end_turn", {"turn": "required int"}),
         "force_end_turn": ("_force_end_turn", {"turn": "required int"}),
         # Popup choice tools
@@ -442,6 +446,12 @@ class CivMCPServer:
         """Order a unit to heal in place."""
         unit_id = self._require_param(args, "unit_id", int)
         return self._send_pipe_request(request={"type": "unit_heal", "unit_id": unit_id})
+
+    def _unit_build(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Order a worker to build an improvement at its current tile."""
+        unit_id = self._require_param(args, "unit_id", int)
+        build_type = self._require_param(args, "build_type", int)
+        return self._send_pipe_request(request={"type": "unit_build", "unit_id": unit_id, "build_type": build_type})
 
     def _end_turn(self, args: dict[str, Any]) -> dict[str, Any]:
         """Signal that the LLM is done with its turn and wait for DLL confirmation.
