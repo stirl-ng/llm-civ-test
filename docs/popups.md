@@ -29,6 +29,7 @@ Method column: **instant** = `PopupProcessed` fired immediately in `OnPopup`, po
 | Trade | `Includes/TradeLogic.lua` | ✓ | ? | Verify method |
 | Goody hut reward (informational) | `GoodyHutPopup.lua` | ✓ | timer | `BUTTONPOPUP_GOODY_HUT_REWARD` |
 | Goody hut choice (picker promotion) | `ChooseGoodyHutReward.lua` | ✓ | timer | Auto-selects first valid option; only shown when unit has `PROMOTION_GOODY_HUT_PICKER` |
+| Great Work completed | `GreatWorkPopup.lua` | ✓ | instant | `BUTTONPOPUP_GREAT_WORK_COMPLETED_ACTIVE_PLAYER`; informational only |
 | Natural wonder discovered | ? | ? | | Blocks end_turn; needs investigation |
 | Policy adoption screen | ? | ? | | Blocks end_turn if open |
 | Pantheon choice | ? | ? | | `select_pantheon` tool exists in orchestrator |
