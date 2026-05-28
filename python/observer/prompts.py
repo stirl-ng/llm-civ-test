@@ -109,7 +109,7 @@ def build_turn_analysis_prompt(record: TurnRecord, game_summary: str, known_issu
         "Rules:",
         "- Only YES for issues that will recur every turn without a code/prompt fix.",
         "- Do NOT halt if the agent self-corrected within this turn (retried and succeeded).",
-        "- `end_turn` returning CANNOT_END_TURN due to blocking units is normal — the agent is expected to move those units and retry. This is NOT a harness issue unless it fails even after blockers are cleared.",
+        "- `end_turn` returning CANNOT_END_TURN can be normal — the agent is expected to clear blockers and retry. This is NOT a harness issue unless it fails even after blockers are cleared.",
         "- Do NOT halt for minor inefficiency (extra tool calls, redundant checks).",
     ]
 
