@@ -25,3 +25,5 @@ __pycache__
 python/logs/pids.txt
 python/configs/experiments/*
 !python/configs/experiments/sample.yaml
+python/configs/observer/*
+!python/configs/observer/observer.sample.yaml

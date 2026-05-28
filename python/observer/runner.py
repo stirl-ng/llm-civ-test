@@ -31,7 +31,14 @@ def load_config(config_arg: str) -> dict[str, Any]:
     config_path = Path(config_arg)
     if not config_path.is_absolute() and "/" not in config_arg and "\\" not in config_arg:
         python_root = Path(__file__).resolve().parent.parent
-        config_path = python_root / "configs" / "experiments" / f"{config_arg}.yaml"
+        # Check configs/observer/ first, then configs/experiments/ as fallback
+        for subdir in ("observer", "experiments"):
+            candidate = python_root / "configs" / subdir / f"{config_arg}.yaml"
+            if candidate.exists():
+                config_path = candidate
+                break
+        else:
+            config_path = python_root / "configs" / "observer" / f"{config_arg}.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as f:

@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 CONFIGS_DIR = Path(__file__).parent / "configs" / "experiments"
+OBSERVER_CONFIGS_DIR = Path(__file__).parent / "configs" / "observer"
 LOGS_DIR = Path(__file__).parent / "logs"
 PID_FILE = LOGS_DIR / "pids.txt"
 SESSION = "civ"
@@ -23,6 +24,10 @@ SESSION = "civ"
 
 def available_configs() -> list[str]:
     return sorted(p.stem for p in CONFIGS_DIR.glob("*.yaml"))
+
+
+def available_observer_configs() -> list[str]:
+    return sorted(p.stem for p in OBSERVER_CONFIGS_DIR.glob("*.yaml"))
 
 
 def pick_configs() -> list[str]:
@@ -45,6 +50,29 @@ def pick_configs() -> list[str]:
         else:
             print(f"  Unknown config: {token}")
     return selected
+
+
+def pick_observer() -> str | None:
+    configs = available_observer_configs()
+    if not configs:
+        return None
+    print("Observer configs:")
+    print(f"  0) none")
+    for i, name in enumerate(configs, 1):
+        print(f"  {i}) {name}")
+    raw = input("Select observer (Enter to skip): ").strip()
+    if not raw or raw == "0" or raw.lower() == "none":
+        return None
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(configs):
+            return configs[idx]
+        print(f"  Invalid index — skipping observer")
+        return None
+    if raw in configs:
+        return raw
+    print(f"  Unknown config '{raw}' — skipping observer")
+    return None
 
 
 # ── Windows launcher ──────────────────────────────────────────────────────────
@@ -148,7 +176,15 @@ def main() -> None:
         return
 
     configs = known.configs or pick_configs()
-    observer_cfg = known.observer
+    observer_cfg = known.observer or (pick_observer() if not known.configs else None)
+
+    # Allow observer configs to be passed as positional args alongside runner configs
+    if configs:
+        obs_names = set(available_observer_configs())
+        detected_observer = next((c for c in configs if c in obs_names), None)
+        if detected_observer:
+            configs = [c for c in configs if c != detected_observer]
+            observer_cfg = observer_cfg or detected_observer
 
     if not configs:
         print("No configs selected.")

@@ -1,0 +1,11 @@
+backend:
+  kind: openai
+  model: gpt-4o
+  # api_key read from OPENAI_API_KEY env var
+
+observer:
+  orchestrator_url: http://localhost:8765
+  temperature: 0.3
+  since_turn: 0
+  # log_dir: null        # defaults to python/logs/
+  # output_log: null     # defaults to python/logs/observer_{game_id}.jsonl

@@ -416,6 +416,105 @@
             font-family: inherit;
         }
 
+        /* ── Tabs ── */
+        .tab-nav {
+            display: flex;
+            gap: 2px;
+            align-items: center;
+        }
+        .tab-link {
+            font-size: 11px;
+            padding: 3px 11px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            color: var(--dim);
+            text-decoration: none;
+            letter-spacing: 0.5px;
+        }
+        .tab-link:hover { color: var(--text); border-color: var(--border); }
+        .tab-link.active { color: var(--amber); border-color: rgba(232,160,32,0.4); background: rgba(232,160,32,0.07); }
+
+        /* ── Observer panel ── */
+        .observer-layout {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex: 1;
+            min-height: 0;
+            padding: 10px;
+            overflow-y: auto;
+        }
+        .obs-summary-card {
+            background: var(--panel);
+            border: 1px solid var(--border-hi);
+            border-radius: 7px;
+            padding: 14px 16px;
+            flex-shrink: 0;
+        }
+        .obs-summary-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--cyan);
+            margin-bottom: 9px;
+            font-weight: 600;
+        }
+        .obs-summary-text {
+            font-size: 12px;
+            color: var(--dim);
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+        .obs-turn-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        .obs-turn-card.halted { border-color: rgba(255,90,90,0.5); }
+        .obs-turn-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            user-select: none;
+            border-bottom: 1px solid var(--border);
+        }
+        .obs-turn-header:hover { background: rgba(255,255,255,0.02); }
+        .obs-turn-num { font-size: 11px; font-weight: 700; color: var(--dim); }
+        .obs-outcome {
+            font-size: 9px; padding: 1px 6px; border-radius: 8px;
+            font-weight: 600; text-transform: uppercase;
+        }
+        .obs-outcome.success { color: var(--green); border: 1px solid rgba(61,220,132,0.35); }
+        .obs-outcome.blocked { color: var(--amber); border: 1px solid rgba(232,160,32,0.35); }
+        .obs-outcome.incomplete { color: var(--muted); border: 1px solid var(--border); }
+        .obs-halt-badge {
+            font-size: 9px; padding: 1px 7px; border-radius: 8px; font-weight: 700;
+            color: var(--red); border: 1px solid rgba(255,90,90,0.4);
+            background: rgba(255,90,90,0.08); text-transform: uppercase;
+        }
+        .obs-ts { font-size: 10px; color: var(--muted); margin-left: auto; }
+        .obs-turn-body { padding: 12px 14px; }
+        .obs-halt-reason {
+            margin-bottom: 10px;
+            padding: 8px 11px;
+            background: rgba(255,90,90,0.07);
+            border: 1px solid rgba(255,90,90,0.25);
+            border-radius: 4px;
+            font-size: 11px;
+            color: var(--red);
+        }
+        .obs-analysis {
+            font-size: 12px;
+            color: var(--dim);
+            white-space: pre-wrap;
+            line-height: 1.65;
+        }
+        .obs-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 40px; font-style: italic; }
+
         /* ── Toggle buttons ── */
         .toggle-buttons {
             position: fixed;
@@ -477,15 +576,20 @@
         <button class="game-selector-btn">Game {{ game_id or '—' }} ▾</button>
         <div class="game-selector-dropdown">
             {% for game in available_games %}
-            <a href="?game_id={{ game.game_id }}{% if debug_mode %}&debug=1{% endif %}"
+            <a href="{% if active_tab == 'observer' %}/observer{% else %}/{% endif %}?game_id={{ game.game_id }}{% if active_tab == 'game' and debug_mode %}&debug=1{% endif %}"
                class="game-selector-item {{ 'current' if game.is_current else '' }}">
                 <span>{{ game.game_id }}</span>
-                <span class="msg-count">{{ game.message_count }} msgs</span>
+                {% if active_tab == 'game' %}<span class="msg-count">{{ game.message_count }} msgs</span>{% endif %}
             </a>
             {% endfor %}
         </div>
     </div>
     {% endif %}
+    <span class="sep">│</span>
+    <nav class="tab-nav">
+        <a href="/{% if game_id %}?game_id={{ game_id }}{% endif %}" class="tab-link {{ 'active' if active_tab == 'game' else '' }}">Game</a>
+        <a href="/observer{% if game_id %}?game_id={{ game_id }}{% endif %}" class="tab-link {{ 'active' if active_tab == 'observer' else '' }}">Observer</a>
+    </nav>
     <div class="header-right">
         <span class="cost-info">
             <span class="cost-val">${{ "%.4f"|format(estimated_cost) }}</span>
@@ -532,7 +636,7 @@
 {% endif %}
 
 <!-- Main layout -->
-<div class="columns">
+<div class="columns" {% if active_tab != 'game' %}style="display:none"{% endif %}>
     <!-- Left: Turn cards -->
     <div class="panel">
         <div class="panel-header">
@@ -564,6 +668,13 @@
                 <div class="empty">None yet</div>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- Observer layout -->
+<div class="observer-layout" id="observer-layout" {% if active_tab != 'observer' %}style="display:none"{% endif %}>
+    <div id="observer-container">
+        <div class="obs-empty">No observer data yet — run the observer alongside a game.</div>
     </div>
 </div>
 
@@ -996,16 +1107,18 @@
             setTimeout(connectSSE, 3000);
         };
     }
-    connectSSE();
+    if (ACTIVE_TAB === 'game') {
+        connectSSE();
 
-    // Polling fallback: re-render every 3 s regardless of SSE state
-    setInterval(() => {
-        if (isModalOpen()) return;
-        fetch('/api/data?' + params.toString())
-            .then(r => r.json())
-            .then(renderAll)
-            .catch(() => {});
-    }, 3000);
+        // Polling fallback: re-render every 3 s regardless of SSE state
+        setInterval(() => {
+            if (isModalOpen()) return;
+            fetch('/api/data?' + params.toString())
+                .then(r => r.json())
+                .then(renderAll)
+                .catch(() => {});
+        }, 3000);
+    }
 
     // ── Game selector click toggle ──
     const selBtn  = document.querySelector('.game-selector-btn');
@@ -1018,8 +1131,83 @@
         document.addEventListener('click', () => selDrop.classList.remove('open'));
     }
 
+    // ── Observer ──
+    const ACTIVE_TAB = '{{ active_tab }}';
+
+    function renderObserver(data) {
+        const container = document.getElementById('observer-container');
+        if (!container) return;
+        const scrollTop = document.getElementById('observer-layout').scrollTop;
+
+        const turns = (data.observer_turns || []).slice().reverse(); // newest first
+        if (turns.length === 0 && !data.game_summary) {
+            container.innerHTML = '<div class="obs-empty">No observer data yet — run the observer alongside a game.</div>';
+            return;
+        }
+
+        let html = '';
+
+        if (data.game_summary) {
+            html += `<div class="obs-summary-card">
+                <div class="obs-summary-label">Game Summary</div>
+                <div class="obs-summary-text">${esc(data.game_summary)}</div>
+            </div>`;
+        }
+
+        for (const t of turns) {
+            const outcomeClass = t.outcome || 'incomplete';
+            const haltBadge = t.halted
+                ? `<span class="obs-halt-badge">⚠ halt</span>` : '';
+            const haltReason = t.halted && t.halt_reason
+                ? `<div class="obs-halt-reason">Halt reason: ${esc(t.halt_reason)}</div>` : '';
+            const ts = t.timestamp ? `<span class="obs-ts">${esc(t.timestamp)}</span>` : '';
+            html += `
+                <div class="obs-turn-card ${t.halted ? 'halted' : ''}">
+                    <div class="obs-turn-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'">
+                        <span class="obs-turn-num">TURN ${t.turn}</span>
+                        <span class="obs-outcome ${outcomeClass}">${esc(t.outcome || 'incomplete')}</span>
+                        ${haltBadge}
+                        ${ts}
+                    </div>
+                    <div class="obs-turn-body">
+                        ${haltReason}
+                        <div class="obs-analysis">${esc(t.observation)}</div>
+                    </div>
+                </div>`;
+        }
+
+        container.innerHTML = html;
+        document.getElementById('observer-layout').scrollTop = scrollTop;
+    }
+
+    if (ACTIVE_TAB === 'observer') {
+        renderObserver(PAGE_DATA);
+
+        const obsParams = new URLSearchParams(window.location.search);
+        if (!obsParams.has('game_id') && PAGE_DATA.game_id) {
+            obsParams.set('game_id', PAGE_DATA.game_id);
+        }
+
+        function connectObserverSSE() {
+            const src = new EventSource('/api/observer/stream?' + obsParams.toString());
+            src.addEventListener('update', e => {
+                try { renderObserver(JSON.parse(e.data)); }
+                catch (err) { console.error('Observer SSE parse error:', err); }
+            });
+            src.onerror = () => { src.close(); setTimeout(connectObserverSSE, 3000); };
+        }
+        connectObserverSSE();
+
+        setInterval(() => {
+            fetch('/api/observer/data?' + obsParams.toString())
+                .then(r => r.json())
+                .then(renderObserver)
+                .catch(() => {});
+        }, 5000);
+    }
+
     // ── Initial render ──
-    renderAll(PAGE_DATA);
+    if (ACTIVE_TAB === 'game') renderAll(PAGE_DATA);
 </script>
 </body>
 </html>

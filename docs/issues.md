@@ -48,6 +48,16 @@ Some popups still block `end_turn`. See `docs/popups.md` for current status.
 
 Known outstanding: intermittent leaderboard popups still block (not in the popups inventory yet).
 
+## Human-gated popups need a systematic fix
+
+Several popups only appear for `isHuman()` players — the C++ check gates them. Because the LLM player is registered as human, it receives these popups, which block `end_turn` until a choice is made. Current workarounds use Lua timer overrides that auto-pick (e.g. `ChooseGoodyHutReward.lua` auto-selects the first valid option). These are stopgaps.
+
+The right fix is one of:
+- **C++ gate**: Add an `ISHUMAN_LLM` flag (or check a per-player "auto-resolve" bit) so the C++ skips the popup and picks randomly for LLM players — no Lua needed.
+- **LLM tool**: For choices that are strategically significant, send options over the pipe and add a tool (like TechPopup/ProductionPopup) so the LLM actually decides.
+
+Other popups likely affected by the same pattern: any VP/CBP feature that adds a `BUTTONPOPUP_CHOOSE_*` guarded by `isHuman()`. Audit `CvPlayer.cpp` and `CvGame.cpp` for all `AddPopup` calls inside `isHuman()` branches before fixing individually.
+
 ---
 
 ## Notification timing / missed events
@@ -72,6 +82,16 @@ See `docs/prompt-design.md`. For games > ~50 turns, accumulated context will ove
 
 ## unit-actions.md response schema unverified
 `docs/unit-actions.md` documents that action responses include a `state_delta` field. This has not been verified against live DLL output — the DLL may not emit deltas at all. Verify before relying on it.
+
+---
+
+## x/y coordinate correctness unverified across map types
+Tile coordinates passed to and from tools (e.g. `move_unit`, `get_map_view`) have not been verified to be consistent across all map types and sizes. A mismatch between Lua, C++, and Python coordinate conventions could cause units to move to wrong tiles or tool calls to fail silently. Needs a deliberate test across at least two map sizes before coordinate-sensitive features are trusted.
+
+---
+
+## AI popup behavior vs LLM popup behavior
+Open question: do C++ AI players ever receive popups that block their turn, or does the C++ always resolve AI decisions inline without showing a popup? If AI players are fully popup-free, then every `isHuman()`-gated popup we encounter is LLM-specific — which informs the fix strategy (see **Human-gated popups** above). Verify by checking `CvPlayer.cpp` and `CvGame.cpp` for any `AddPopup` calls NOT inside an `isHuman()` branch.
 
 ---
 

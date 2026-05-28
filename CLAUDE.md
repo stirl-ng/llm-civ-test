@@ -68,6 +68,16 @@ For deeper post-game analysis: `python -m orchestrator.analyze_logs [--game-id I
 - `session_id` is a pipe-connection counter, auto-injected by orchestrator into requests, never exposed to the LLM. C++ includes it in messages for routing; ignore it at the game logic level.
 - The `interactive` flag in `runner.py` blocks on stdin — incompatible with unsupervised mode. Keep it `false` in configs for actual runs.
 - Model name normalization for journal scoping lives implicitly in `journal.py::set_current_player()`. No documented convention yet.
+- **Only mod `(1) Community Patch` is installed** — the repo contains `(2) Vox Populi` source but it is not deployed. The installed MODS dir at `Documents/My Games/Sid Meier's Civilization 5/MODS/` has only `(1) Community Patch`. Lua overrides go there and in the matching repo path; the `(2)` folder is source-only reference.
+
+**Finding and fixing a new blocking popup:**
+1. Note the popup title (visible on screen) or the `BUTTONPOPUP_*` type from the log.
+2. Look up the type in `LuaCATS/enum/ButtonPopupTypes.d.lua` to get the hex ID.
+3. Search `CvPlayer.cpp` / `CvGame.cpp` for `AddPopup` calls with that type to understand when it fires.
+4. Search `(1) Community Patch/Core Files/Overrides/` for an existing Lua handler. If none, check the base game at `Program Files (x86)/Steam/steamapps/common/Sid Meier's Civilization V/Assets/DLC/Expansion2/UI/InGame/Popups/`.
+5. Create an override in `(1) Community Patch/Core Files/Overrides/`, add an `import="1"` entry to the `.modinfo` (with md5 from `md5sum`), and copy both files to the installed MODS directory.
+6. Update `docs/popups.md`.
+If the popup has multiple selections or options, select one as default and note that it must be reworked later in `issues.md`.
 
 ## Documentation
 
